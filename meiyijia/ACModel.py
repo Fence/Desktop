@@ -1,3 +1,4 @@
+# coding: utf-8
 import ipdb
 import argparse
 import numpy as np
@@ -100,9 +101,20 @@ class ActorCritic(object):
 
             return state_input, action_input, critic_z
 
+    # ===================================================================== #
+    #                              Model Training                           #
+    # ===================================================================== #
+    def remember(self, y_mask, cur_state, action, reward, new_state, done):
+        self.memory.append([y_mask, cur_state, action, reward, new_state, done])
 
-    def remember(self, cur_state, action, reward, new_state, done):
-        self.memory.append([cur_state, action, reward, new_state, done])
+
+    def _train_actor(self, samples):
+        for sample in samples:
+            y_mask, cur_state, action, reward, new_state, _ = sample
+            predicted_action = self.sess.run(self.actor_output, feed_dict={
+                self.actor_state_input: cur_state,
+                self.actor_y_mask: y_mask
+                })
 
 
 
