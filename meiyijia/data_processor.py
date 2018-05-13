@@ -29,13 +29,13 @@ class DateProcessing(object):
         #names = workbook.sheet_names()
         #['门店', '商品', '供应商', '天气', '半月档促销商品', '门店仓位']
         self.stores_wb = workbook.sheet_by_name('门店')
-        self.goods_wb = workbook.sheet_by_name('商品')
+        self.items_wb = workbook.sheet_by_name('商品')
         self.weather_wb = workbook.sheet_by_name('天气')
         self.suppliers_wb = workbook.sheet_by_name('供应商')
         self.promotions_wb = workbook.sheet_by_name('半月档促销商品')
         self.warehouses_wb = workbook.sheet_by_name('门店仓位')
 
-        self.dc2int = {'A': 1, 'B': 2, 'C': 3, '': 4} # delivery_cycle to int
+        self.dc2int = {'A': 1, 'B': 2, 'C': 3, '': 0} # delivery_cycle to int
         self.stores = {} # {store_id: (city, delivery_cycle) }
         self.items = {} # {item_id: [labels, ..., supplier_id] }
         self.suppliers = {} # {supplier_id: {warehouse_id: [data]}}
@@ -46,14 +46,26 @@ class DateProcessing(object):
         self.promo2int = {}
         self.warehouses = {} # {store_id: {class_id: warehouse_id} }
         self.warehouse_item_transtime = {} # {warehouse_id: {item_id: [orderdays, arrivedays, transtime]}}
+        self.warehouse_item = {}
+        #self.warehouse_item_sales_volume = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
+
 
         self.get_stores()
-        self.get_goods()
+        self.get_items()
         self.get_suppliers()
         self.get_weather()
         self.get_promotions()
         self.get_warehouses()
         self.get_transport_time()
+
+
+    def int2onehot(self, data_dict):
+        new_dict = {}
+        for k,v in data_dict.iteritems():
+            one_hot = np.zeros(len(data_dict), dtype=np.int32)
+            one_hot[v] = 1
+            new_dict[v] = one_hot
+        return new_dict
 
 
     @timeit
@@ -244,7 +256,7 @@ class DateProcessing(object):
                 tmp_x = list(self.date_transformation(year, month, day))
                 city = self.city2int[self.stores[store_id][0]]
                 weather = self.weather[date.replace('-','')][city]
-                date = dtdt.strptime(date, '%Y-%m-%d')
+                #date = dtdt.strptime(date, '%Y-%m-%d')
                 promotion = [0]*8
                 if item_id in self.promotions:
                     for p in self.promotions[item_id]:
@@ -292,6 +304,71 @@ class DateProcessing(object):
         else:
             season = 4
         return year, month, day, season, weekday
+
+
+    def compute_inventory_by_warehouse(self):
+        sales_data = {}
+        in_out_data = {}
+        for line in open('data/warehouses_stock_return.DAT').readlines():
+            date, warehouse_id, item_id, stock_volume, return_volume = line.split('\t')
+            stock_volume, return_volume = float(stock_volume), float(return_volume)
+            if warehouse_id in in_out_data:
+                if item_id in in_out_data[warehouse_id]:
+                    if date not in in_out_data[warehouse_id][item_id]:
+                        in_out_data[warehouse_id][item_id][date] = [stock_volume, return_volume]
+                else:
+                    in_out_data[warehouse_id][item_id] = {date: [stock_volume, return_volume]}
+            else:
+                in_out_data[warehouse_id] = {item_id: {date: [stock_volume, return_volume]}}
+
+        #ipdb.set_trace()
+        for line in open('data/warehouses_sales_volume.DAT').readlines():
+            date, warehouse_id, item_id, sales_volume = line.strip().split('\t')
+            sales_volume = float(sales_volume)
+            if warehouse_id in sales_data:
+                if item_id in sales_data[warehouse_id]:
+                    if date not in sales_data[warehouse_id][item_id]:
+                        sales_data[warehouse_id][item_id][date] = [sales_volume]
+                else:
+                    sales_data[warehouse_id][item_id] = {date: [sales_volume]}
+            else:
+                sales_data[warehouse_id] = {item_id: {date: [sales_volume]}}
+            try:
+                stock_volume, return_volume = in_out_data[warehouse_id][item_id][date]
+                inventory = stock_volume - return_volume - sales_volume
+            except Exception as e:
+                inventory = stock_volume = return_volume = 0
+            sales_data[warehouse_id][item_id][date].extend([inventory, stock_volume, return_volume])
+
+        start_date = dtdt.strptime('2017-04-01','%Y-%m-%d')
+        dates = [str(start_date+dt.timedelta(days=i)).split()[0] for i in xrange(387)]
+        count = count_error = 0
+        
+        for warehouse_id in sales_data:
+            for item_id in sales_data[warehouse_id]:
+                try:
+                    v = sales_data[warehouse_id][item_id]
+                    v = in_out_data[warehouse_id][item_id]
+                except:
+                    count_error += 1
+                    continue
+                for date in dates:
+                    if date in sales_data[warehouse_id][item_id] or date in in_out_data[warehouse_id][item_id]:
+                        try:
+                            sales_volume = sales_data[warehouse_id][item_id][date][0]
+                        except:
+                            sales_volume = 0
+                        try:
+                            stock_volume, return_volume = in_out_data[warehouse_id][item_id][date]
+                            inventory = stock_volume - return_volume - sales_volume
+                        except:
+                            inventory = stock_volume = return_volume = 0
+                        sales_data[warehouse_id][item_id][date] = [sales_volume, inventory, stock_volume, return_volume]
+                        count += 1
+                        if count %1000000 == 0:
+                            print(count)
+        print('\ncount_error: %d\n' % count_error)
+        return sales_data
 
 
     def get_sales_volume_by_warehouse(self):
@@ -454,19 +531,19 @@ class DateProcessing(object):
             city = self.stores_wb.cell(i, 1).value.strip()
             dc = self.stores_wb.cell(i, 2).value.strip()
             if city not in self.city2int:
-                self.city2int[city] = len(self.city2int) + 1
+                self.city2int[city] = len(self.city2int)
             if store_id not in self.stores:
                 self.stores[store_id] = [self.city2int[city], self.dc2int[dc]]
                 # self.stores[store_id] = self.stores_wb.row_values(i, 1, 3)
         print('stores: %d' % len(self.stores))
 
 
-    def get_goods(self):
-        for i in range(1, self.goods_wb.nrows):
-            item_id = self.goods_wb.cell(i, 0).value
-            supplier_id = self.goods_wb.cell(i, self.goods_wb.ncols - 1).value
+    def get_items(self):
+        for i in range(1, self.items_wb.nrows):
+            item_id = self.items_wb.cell(i, 0).value
+            supplier_id = self.items_wb.cell(i, self.items_wb.ncols - 1).value
             if item_id not in self.items:
-                self.items[item_id] = [s.strip() for s in self.goods_wb.row_values(i, 1, None)[0::2]]
+                self.items[item_id] = [s.strip() for s in self.items_wb.row_values(i, 1, None)[0::2]]
                 self.items[item_id].append(supplier_id)
         print('items: %d' % len(self.items))
 
@@ -492,13 +569,13 @@ class DateProcessing(object):
             city = self.weather_wb.cell(i, 1).value
             weather = self.weather_wb.row_values(i, 2, None)
             if city not in self.city2int:
-                self.city2int[city] = len(self.city2int) + 1
+                self.city2int[city] = len(self.city2int)
             for j,w in enumerate(weather):
                 if w not in self.weather2int[j]:
                     try:
                         self.weather2int[j][w] = int(w)
                     except:
-                        self.weather2int[j][w] = len(self.weather2int[j]) + 1
+                        self.weather2int[j][w] = len(self.weather2int[j])
             city = self.city2int[city]
             weather = [self.weather2int[j][w] for j,w in enumerate(weather)]
             if date in self.weather:
@@ -511,13 +588,15 @@ class DateProcessing(object):
 
     def get_promotions(self):
         for i in range(1, self.promotions_wb.nrows):
-            date_start = dtdt.strptime(self.promotions_wb.cell(i, 1).value.split()[0], '%Y-%m-%d')
-            date_end = dtdt.strptime(self.promotions_wb.cell(i, 2).value.split()[0], '%Y-%m-%d')
+            #date_start = dtdt.strptime(self.promotions_wb.cell(i, 1).value.split()[0], '%Y-%m-%d')
+            #date_end = dtdt.strptime(self.promotions_wb.cell(i, 2).value.split()[0], '%Y-%m-%d')
+            date_start = self.promotions_wb.cell(i, 1).value.split()[0]
+            date_end = self.promotions_wb.cell(i, 2).value.split()[0]
             item_id = self.promotions_wb.cell(i, 4).value
             promote_way = self.promotions_wb.cell(i, 5).value
             discount = self.promotions_wb.cell(i, 6).value
             if promote_way not in self.promo2int:
-                self.promo2int[promote_way] = len(self.promo2int) + 1
+                self.promo2int[promote_way] = len(self.promo2int)
             if discount == '-': # have bought A and pay more money to buy B
                 discount = '0'
             promote_way = self.promo2int[promote_way]
@@ -554,14 +633,18 @@ class DateProcessing(object):
                 transtime = int(data[0][-1])
                 if warehouse_id in self.warehouse_item_transtime:
                     if item_id not in self.warehouse_item_transtime[warehouse_id]:
+                        self.warehouse_item[warehouse_id].append(item_id)
                         # transport time format = [orderdays, arrivedays, transtime]
                         self.warehouse_item_transtime[warehouse_id][item_id] = [orderdays, arrivedays, transtime] 
                 else:
+                    self.warehouse_item[warehouse_id] = [item_id]
                     self.warehouse_item_transtime[warehouse_id] = {item_id: [orderdays, arrivedays, transtime]}
 
 
 if __name__ == '__main__':
     data = DateProcessing()
+    sales_data = data.compute_inventory_by_warehouse()
+    data.save_sales_inventory_stock_return(sales_data, name='warehouse_sales_inventory_stock_return', mode='all')
     # data.get_stock_return_by_warehouse()
     # sales_data = data.compute_inventory()
     # data.save_sales_inventory_stock_return(sales_data, name='new_sales_inventory_stock_return', mode='all')
