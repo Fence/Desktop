@@ -27,7 +27,8 @@ class ActorCritic(object):
         self.conv_layers = args.conv_layers
 
         self.gamma = args.gamma
-        self.epsilon = args.epsilon
+        self.epsilon = args.epsilon_start
+        self.epsilon_end = args.epsilon_end
         self.epsilon_decay = args.epsilon_decay
         self.learning_rate = args.learning_rate
         self.max_random_action = args.max_random_action
@@ -38,7 +39,7 @@ class ActorCritic(object):
                        'new_state': deque(maxlen=args.mem_size),
                        'terminal':  deque(maxlen=args.mem_size)}
         self.actor_state_input, self.actor_model = self.build_actor_network()
-        _, self.target_actor_model = self.build_actor_network()
+        _, self.actor_target_model = self.build_actor_network()
 
         self.actor_critic_grad = tf.placeholder(tf.float32, [None, 1]) 
         # where we will feed de/dC (from critic)
@@ -56,7 +57,7 @@ class ActorCritic(object):
 
         self.critic_state_input, self.critic_action_input, \
             self.critic_model = self.build_critic_network()
-        _, _, self.target_critic_model = self.build_critic_network()
+        _, _, self.critic_target_model = self.build_critic_network()
 
         self.critic_grads = tf.gradients(self.critic_model.output, 
             self.critic_action_input) # where we calcaulte de/dC for feeding above
@@ -67,14 +68,18 @@ class ActorCritic(object):
 
     def build_actor_network(self, name='actor'):
         state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
-        inputs = state_input
-        for i in range(self.conv_layers):
-            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(inputs)
+        if self.conv_layers > 1:
+            inputs = state_input
+            for i in range(self.conv_layers):
+                conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
+                mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
+                inputs = mp
+        else:
+            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(state_input)
             mp = MaxPooling2D((100, 1), strides=(100, 1), padding='valid')(conv)
-            inputs = mp
-        #state_h1 = Dense(8, activation='relu')(state_input)
-        state_h1 = Flatten()(mp)
-        output = Dense(1)(state_h1)
+        flat = Flatten()(mp)
+        state_h1 = Dense(256, activation='relu')(flat)
+        output = Dense(1, activation='relu')(state_h1)
 
         model = Model(input=state_input, output=output)
         adam = Adam(lr=0.001)
@@ -85,19 +90,23 @@ class ActorCritic(object):
 
     def build_critic_network(self, name='critic'):
         state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
-        inputs = state_input
-        for i in range(self.conv_layers):
-            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(inputs)
+        if self.conv_layers > 1:
+            inputs = state_input
+            for i in range(self.conv_layers):
+                conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
+                mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
+                inputs = mp
+        else:
+            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(state_input)
             mp = MaxPooling2D((100, 1), strides=(100, 1), padding='valid')(conv)
-            inputs = mp
-        #state_h1 = Dense(8, activation='relu')(state_input)
         flat = Flatten()(mp)
-        state_h1 = Dense(1, activation='relu')(flat)
+        state_h1 = Dense(256, activation='relu')(flat)
+        state_h2 = Dense(1, activation='relu')(state_h1)
 
         action_input = Input(shape=[1])
         action_h1 = Dense(1, activation='relu')(action_input)
 
-        merged = Add()([state_h1, action_h1])
+        merged = Add()([state_h2, action_h1])
         output = Dense(1)(merged)
         model = Model(input=[state_input, action_input], output=output)
 
@@ -136,8 +145,8 @@ class ActorCritic(object):
     def _train_critic(self, cur_states, actions, rewards, new_states, terminals):
         # 训练critic网络；  输入：s_t, a_t；  输出：累积回报的期望 Q(s_t, a_t)
         # s_{t+1}输入actor得到a_{t+1}，再将s_{t+1},a_{t+1}输入critic计算R_{t+1:infty}
-        target_actions = self.target_actor_model.predict(new_states)
-        future_rewards = self.target_critic_model.predict([new_states, target_actions])#[0][0]
+        target_actions = self.actor_target_model.predict(new_states)
+        future_rewards = self.critic_target_model.predict([new_states, target_actions])#[0][0]
         for i in range(len(terminals)):
             if not terminals[i]:
                 # R_t = r_t + gamma * R_{t+1:infty}
@@ -165,11 +174,11 @@ class ActorCritic(object):
 
     def _update_actor_target(self):
         actor_model_weights  = self.actor_model.get_weights()
-        actor_target_weights = self.target_critic_model.get_weights()
+        actor_target_weights = self.actor_target_model.get_weights()
         
         for i in range(len(actor_target_weights)):
             actor_target_weights[i] = actor_model_weights[i]
-        self.target_critic_model.set_weights(actor_target_weights)
+        self.actor_target_model.set_weights(actor_target_weights)
 
     def _update_critic_target(self):
         critic_model_weights  = self.critic_model.get_weights()
@@ -188,7 +197,8 @@ class ActorCritic(object):
     # ========================================================================= #
 
     def act(self, cur_state):
-        self.epsilon *= self.epsilon_decay
+        if self.epsilon > self.epsilon_end:
+            self.epsilon *= self.epsilon_decay
         if np.random.random() < self.epsilon:
             while True:
                 action = np.random.randn(1)[0]*self.max_random_action + self.max_random_action
@@ -203,53 +213,73 @@ def main():
     parser.add_argument('-emb_dim', type=int, default=30)
     parser.add_argument('-n_items', type=int, default=688)
     parser.add_argument('-n_stores', type=int, default=2000)
+    parser.add_argument('-min_dates', type=int, default=30)
+    parser.add_argument('-min_stores', type=int, default=100)
     parser.add_argument('-mem_size', type=int, default=5000)
     parser.add_argument('-conv_layers', type=int, default=1)
     parser.add_argument('-batch_size', type=int, default=32)
     parser.add_argument('-gamma', type=float, default=0.95)
-    parser.add_argument('-epsilon', type=float, default=1.0)
-    parser.add_argument('-epsilon_decay', type=float, default=0.995)
-    parser.add_argument('-learning_rate', type=float, default=0.001)
-    parser.add_argument('-max_random_action', type=int, default=50)
-    parser.add_argument('-max_stores_per_warehouse', type=int, default=2000)
+    parser.add_argument('-epsilon_start', type=float, default=1.0)
+    parser.add_argument('-epsilon_end', type=float, default=0.1)
+    parser.add_argument('-epsilon_decay', type=float, default=0.9975)
+    parser.add_argument('-learning_rate', type=float, default=0.0025)
+    parser.add_argument('-max_random_action', type=int, default=70)
+    parser.add_argument('-random', type=bool, default=True)
+    parser.add_argument('-target_steps', type=int, default=5)
+    parser.add_argument('-train_steps', type=int, default=1000000)
     parser.add_argument('-gpu_rate', type=float, default=0.2)
-    parser.add_argument('-result_dir', type=str, default='results/test')
+    parser.add_argument('-result_dir', type=str, default='results/dn256_avgr_ly1_lr0025_order_return_random1')
     args = parser.parse_args()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
     with open('%s.txt'%args.result_dir,'w') as args.logger:
         for (k,v) in sorted(args.__dict__.iteritems(), key=lambda x:x[0]):
             args.logger.write('{}: {}\n'.format(k, v))
+
         with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
             #ipdb.set_trace()
             start = time.time()
             env = Environment(args)
             model = ActorCritic(env, sess, args)
 
-            total_reward = epoch = 0
-            for i in range(10000):
-                if i % 100 == 0:
-                    print('step: %d' % i)
-                cur_state = env.get_state()
-                tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
-                action = model.act(tmp_state)
-                new_state, reward, terminal = env.step(action)
-                cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
-                new_state = np.reshape(new_state, [new_state.shape[0], new_state.shape[1], 1])
+            try:
+                total_reward = epoch = last_step = 0
+                for i in range(args.train_steps):
+                    if i % 100 == 0:
+                        print('step: %d' % i)
+                    cur_state = env.get_state()
+                    tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
+                    action = model.act(tmp_state)
+                    new_state, reward, terminal = env.step(action)
+                    cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
+                    new_state = np.reshape(new_state, [new_state.shape[0], new_state.shape[1], 1])
 
-                model.remember(cur_state, action, reward, new_state, terminal)
-                model.train()
+                    model.remember(cur_state, action, reward, new_state, terminal)
+                    model.train()
+                    if i % args.target_steps:
+                        model.update_target()
 
-                if not terminal:
-                    total_reward += reward
-                else:
-                    args.logger.write(('epoch {}, reward: {:.4f}\n'.format(epoch, total_reward)))
-                    print('epoch {}, reward: {:.4f}\n'.format(epoch, total_reward))
-                    epoch += 1
-                    total_reward = 0
+                    if not terminal:
+                        total_reward += reward
+                    else:
+                        steps = i - last_step + 1
+                        avg_reward = total_reward / steps
+                        if avg_reward == 0:
+                            ipdb.set_trace()
+                        most_action = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])[-1]
+                        args.logger.write(('epoch {} steps {} total_reward {} avg_reward {} max_action {} most_action {} {}\n'.format(
+                                            epoch, steps, total_reward, avg_reward, env.max_action, most_action[0], most_action[1])))
+                        print('max_action: {}  most_action: {}'.format(env.max_action, most_action))
+                        print('epoch {}, steps {}, total_reward {}, avg_reward: {:.2f}\n'.format(
+                                epoch, steps, total_reward, avg_reward))
+                        epoch += 1
+                        last_step = i
+                        total_reward = 0
+            except KeyboardInterrupt:
+                print('\nManually stop the program !\n')
 
         args.logger.write('\nmax_action: {}\nsorted seen actions:\n'.format(env.max_action))
-        for k,v in sorted(self.seen_actions.iteritems(), key=lambda x:x[1], reverse=True):
-            args.write('{}: {}\n'.format(k*10, v))
+        for k,v in sorted(env.seen_actions.iteritems(), key=lambda x:x[1], reverse=True):
+            args.logger.write('{}: {}\n'.format(k*10, v))
         end = time.time()
         args.logger.write('\nTime cost: %.2fs\n' % (end - start))
         print('\nTime cost: %.2fs\n' % (end - start))
