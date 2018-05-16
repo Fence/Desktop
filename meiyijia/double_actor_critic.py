@@ -4,6 +4,7 @@ import time
 import random
 import argparse
 import numpy as np
+import matplotlib.pyplot as plt
 import tensorflow as tf
 import keras.backend as K
 from keras.models import Sequential, Model
@@ -40,6 +41,7 @@ class ActorCritic(object):
                        'terminal':  deque(maxlen=args.mem_size)}
         self.actor_state_input, self.actor_model = self.build_actor_network()
         _, self.actor_target_model = self.build_actor_network()
+        self.actor_model.summary()
 
         self.actor_critic_grad = tf.placeholder(tf.float32, [None, 1]) 
         # where we will feed de/dC (from critic)
@@ -55,9 +57,9 @@ class ActorCritic(object):
         #                              Critic Model                             #
         # ===================================================================== #       
 
-        self.critic_state_input, self.critic_action_input, \
-            self.critic_model = self.build_critic_network()
+        self.critic_state_input, self.critic_action_input, self.critic_model = self.build_critic_network()
         _, _, self.critic_target_model = self.build_critic_network()
+        self.critic_model.summary()
 
         self.critic_grads = tf.gradients(self.critic_model.output, 
             self.critic_action_input) # where we calcaulte de/dC for feeding above
@@ -70,7 +72,7 @@ class ActorCritic(object):
         state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
         if self.conv_layers > 1:
             inputs = state_input
-            for i in range(self.conv_layers):
+            for i in xrange(self.conv_layers):
                 conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
                 mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
                 inputs = mp
@@ -81,10 +83,10 @@ class ActorCritic(object):
         state_h1 = Dense(256, activation='relu')(flat)
         output = Dense(1, activation='relu')(state_h1)
 
-        model = Model(input=state_input, output=output)
+        model = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.001)
         model.compile(loss='mse', optimizer=adam)
-        model.summary()
+        #model.summary()
         return state_input, model
 
 
@@ -92,7 +94,7 @@ class ActorCritic(object):
         state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
         if self.conv_layers > 1:
             inputs = state_input
-            for i in range(self.conv_layers):
+            for i in xrange(self.conv_layers):
                 conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
                 mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
                 inputs = mp
@@ -108,11 +110,11 @@ class ActorCritic(object):
 
         merged = Add()([state_h2, action_h1])
         output = Dense(1)(merged)
-        model = Model(input=[state_input, action_input], output=output)
+        model = Model(inputs=[state_input, action_input], outputs=output)
 
         adam = Adam(lr=0.001)
         model.compile(loss='mse', optimizer=adam)
-        model.summary()
+        #model.summary()
         return state_input, action_input, model
 
     # ===================================================================== #
@@ -147,7 +149,7 @@ class ActorCritic(object):
         # s_{t+1}输入actor得到a_{t+1}，再将s_{t+1},a_{t+1}输入critic计算R_{t+1:infty}
         target_actions = self.actor_target_model.predict(new_states)
         future_rewards = self.critic_target_model.predict([new_states, target_actions])#[0][0]
-        for i in range(len(terminals)):
+        for i in xrange(len(terminals)):
             if not terminals[i]:
                 # R_t = r_t + gamma * R_{t+1:infty}
                 rewards[i] += self.gamma * future_rewards[i][0]
@@ -159,7 +161,7 @@ class ActorCritic(object):
 
         #ipdb.set_trace()
         rewards = []
-        indexes = random.sample(range(len(self.memory['cur_state'])), self.batch_size)
+        indexes = random.sample(xrange(len(self.memory['cur_state'])), self.batch_size)
         cur_states = np.array(self.memory['cur_state'], dtype=np.float32)[indexes]
         actions = np.array(self.memory['action'], dtype=np.int32)[indexes]
         rewards = np.array(self.memory['reward'], dtype=np.float32)[indexes]
@@ -176,7 +178,7 @@ class ActorCritic(object):
         actor_model_weights  = self.actor_model.get_weights()
         actor_target_weights = self.actor_target_model.get_weights()
         
-        for i in range(len(actor_target_weights)):
+        for i in xrange(len(actor_target_weights)):
             actor_target_weights[i] = actor_model_weights[i]
         self.actor_target_model.set_weights(actor_target_weights)
 
@@ -184,7 +186,7 @@ class ActorCritic(object):
         critic_model_weights  = self.critic_model.get_weights()
         critic_target_weights = self.critic_target_model.get_weights()
         
-        for i in range(len(critic_target_weights)):
+        for i in xrange(len(critic_target_weights)):
             critic_target_weights[i] = critic_model_weights[i]
         self.critic_target_model.set_weights(critic_target_weights)     
 
@@ -224,16 +226,17 @@ def main():
     parser.add_argument('-epsilon_decay', type=float, default=0.9975)
     parser.add_argument('-learning_rate', type=float, default=0.0025)
     parser.add_argument('-max_random_action', type=int, default=70)
-    parser.add_argument('-random', type=bool, default=True)
-    parser.add_argument('-target_steps', type=int, default=5)
+    parser.add_argument('-random', type=bool, default=False)
+    parser.add_argument('-target_steps', type=int, default=50)
     parser.add_argument('-train_steps', type=int, default=1000000)
     parser.add_argument('-gpu_rate', type=float, default=0.2)
-    parser.add_argument('-result_dir', type=str, default='results/dn256_avgr_ly1_lr0025_order_return_random1')
+    parser.add_argument('-result_dir', type=str, default='results/ts50_year16_17')
     args = parser.parse_args()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
     with open('%s.txt'%args.result_dir,'w') as args.logger:
         for (k,v) in sorted(args.__dict__.iteritems(), key=lambda x:x[0]):
             args.logger.write('{}: {}\n'.format(k, v))
+            print('{}: {}'.format(k, v))
 
         with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
             #ipdb.set_trace()
@@ -242,10 +245,11 @@ def main():
             model = ActorCritic(env, sess, args)
 
             try:
-                total_reward = epoch = last_step = 0
-                for i in range(args.train_steps):
-                    if i % 100 == 0:
-                        print('step: %d' % i)
+                log_steps, log_rewards = [], []
+                total_reward = avg_reward = epoch = last_step = 0
+                for i in xrange(1, args.train_steps+1):
+                    if i % 500 == 0:
+                        print('total training step: %d' % i)
                     cur_state = env.get_state()
                     tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
                     action = model.act(tmp_state)
@@ -255,31 +259,36 @@ def main():
 
                     model.remember(cur_state, action, reward, new_state, terminal)
                     model.train()
-                    if i % args.target_steps:
-                        model.update_target()
+                    total_reward += reward
 
-                    if not terminal:
-                        total_reward += reward
-                    else:
-                        steps = i - last_step + 1
-                        avg_reward = total_reward / steps
-                        if avg_reward == 0:
-                            ipdb.set_trace()
-                        most_action = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])[-1]
-                        args.logger.write(('epoch {} steps {} total_reward {} avg_reward {} max_action {} most_action {} {}\n'.format(
-                                            epoch, steps, total_reward, avg_reward, env.max_action, most_action[0], most_action[1])))
-                        print('max_action: {}  most_action: {}'.format(env.max_action, most_action))
-                        print('epoch {}, steps {}, total_reward {}, avg_reward: {:.2f}\n'.format(
-                                epoch, steps, total_reward, avg_reward))
-                        epoch += 1
-                        last_step = i
+                    if i % args.target_steps == 0:
+                        model.update_target()
+                        avg_reward = total_reward / args.target_steps
                         total_reward = 0
+                        log_steps.append(i)
+                        log_rewards.append(avg_reward)
+                    
+                    if terminal:
+                        steps = i - last_step
+                        last_step = i
+                        epoch += 1
+                        most_action = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])[-1]
+                        args.logger.write(('epoch {} steps {} avg_reward {} max_action {} most_action {} {}\n'.format(
+                                            epoch, steps, avg_reward, env.max_action, most_action[0], most_action[1])))
+                        print('max_action: {}\tmost_action: {}'.format(env.max_action, most_action))
+                        print('epoch {}\tsteps {}\tavg_reward: {:.2f}\n'.format(epoch, steps, avg_reward))
+                        
             except KeyboardInterrupt:
                 print('\nManually stop the program !\n')
 
         args.logger.write('\nmax_action: {}\nsorted seen actions:\n'.format(env.max_action))
         for k,v in sorted(env.seen_actions.iteritems(), key=lambda x:x[1], reverse=True):
             args.logger.write('{}: {}\n'.format(k*10, v))
+        plt.subplot(211)
+        plt.plot(log_steps, log_rewards)
+        plt.subplot(212)
+        plt.plot(log_steps[::20], log_rewards[::20])
+        plt.savefig('%s.pdf'%args.result_dir, format='pdf')
         end = time.time()
         args.logger.write('\nTime cost: %.2fs\n' % (end - start))
         print('\nTime cost: %.2fs\n' % (end - start))
