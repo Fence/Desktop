@@ -2,7 +2,7 @@
 import gc
 import json
 import xlrd
-import ipdb
+#import ipdb
 import time
 import numpy as np
 import datetime as dt
@@ -35,6 +35,8 @@ class DateProcessing(object):
         self.promotions_wb = workbook.sheet_by_name('半月档促销商品')
         self.warehouses_wb = workbook.sheet_by_name('门店仓位')
 
+        self.n_days = 538 # total days with sales, stock and return data
+        self.start_date = dtdt.strptime('2016-11-01','%Y-%m-%d')
         self.dc2int = {'A': 1, 'B': 2, 'C': 3, '': 0} # delivery_cycle to int
         self.stores = {} # {store_id: (city, delivery_cycle) }
         self.items = {} # {item_id: [labels, ..., supplier_id] }
@@ -59,13 +61,19 @@ class DateProcessing(object):
         self.get_transport_time()
 
 
-    def int2onehot(self, data_dict):
+    def int2onehot(self, data_dict, value=1):
         new_dict = {}
         for k,v in data_dict.iteritems():
             one_hot = np.zeros(len(data_dict), dtype=np.int32)
-            one_hot[v] = 1
+            one_hot[v] = value
             new_dict[v] = one_hot
         return new_dict
+
+
+    def onehot(self, num, dim, value=1):
+        output = np.zeros(dim)
+        output[num] = value
+        return output
 
 
     @timeit
@@ -73,8 +81,7 @@ class DateProcessing(object):
         count = 0
         sales_data = {} # {warehouse: {item: {store: {date: [sale, inventory, stock, return]}}}}
         in_out_data = {} # {warehouse: {item: {store: {date: [stock, return]}}}}
-        start_date = dtdt.strptime('2017-04-01','%Y-%m-%d')
-        dates = [str(start_date+dt.timedelta(days=i)).split()[0] for i in xrange(387)]
+        dates = [str(self.start_date+dt.timedelta(days=i)).split()[0] for i in xrange(self.n_days)]
         #ipdb.set_trace()
         for line in open('data/days_stock_and_return_volume.DAT'):
             count += 1
@@ -178,52 +185,16 @@ class DateProcessing(object):
                             count += 1
                             if count %1000000 == 0:
                                 print(count)
+                self.save_sales_inventory_stock_return(sales_data[warehouse_id][item_id], 'items_data/%s_%s'%(warehouse_id, item_id))
         print('\ncount_error: %d\n' % count_error)
-        # del in_out_data
-        # gc.collect()
-        # count = 0
-        # ipdb.set_trace()
-        # self.warehouse_item_store = {'info': 'data[ warehouses[ items[ stores[ [values] ]]]]', 'data':[]}
-        # for warehouse_id in sales_data:
-        #     tmp_warehouse = []
-        #     for item_id in sales_data[warehouse_id]:
-        #         tmp_item = []
-        #         for store_id in sales_data[warehouse_id][item_id]:
-        #             tmp_store = []
-        #             for date, values in sorted(sales_data[warehouse_id][item_id][store_id].iteritems(), key=lambda x:x[0]):
-        #                 tmp_value = [date]
-        #                 tmp_value.extend(values)
-        #                 tmp_store.append(tmp_value)
-        #                 count += 1
-        #                 if count %1000000 == 0:
-        #                     print(count)
-        #             tmp_item.append(tmp_store)
-        #         tmp_warehouse.append(tmp_item)
-        #     self.warehouse_item_store['data'].append(tmp_warehouse)
         return sales_data
 
-    @timeit
-    def save_sales_inventory_stock_return(self, sales_data, name='save_file', mode='all'):
-        if mode == 'year':
-            data = {}
-            #ipdb.set_trace()
-            for warehouse_id in sales_data:
-                for item_id in sales_data[warehouse_id]:
-                    for store_id in sales_data[warehouse_id][item_id]:
-                        data[str((warehouse_id, store_id, item_id))] = []
-                        for date, values in sorted(sales_data[warehouse_id][item_id][store_id].iteritems(), key=lambda x:x[0]):
-                            tmp = [date]
-                            tmp.extend(values)
-                            data[str((warehouse_id, store_id, item_id))].append(tmp)
-                        if len(data) % 1000000 == 0:
-                            print(len(data))
-            with open('data/year_%s.json' % name, 'w') as f:
-                json.dump(data, f, indent=2)
-                print('Successfully save file as data/year_%s.json\n' % name)
-        else:
-            with open('data/%s.json' % name, 'w') as f:
-                json.dump(sales_data, f, indent=2)
-                print('Successfully save file as data/%s.json\n' % name)                  
+
+    def save_sales_inventory_stock_return(self, data, name='save_file'):
+        with open('data/%s.json' % name, 'w') as f:
+            print('Saving file ...')     
+            json.dump(data, f, indent=2)
+            print('Successfully save file as data/%s.json\n' % name)                  
 
 
     def DAT2Matrix(self, args):
@@ -231,7 +202,6 @@ class DateProcessing(object):
         y_all = []
         count_error = 0
         # start from 2017-04-17 so each record has at least a week history 
-        # start_date = dtdt.strptime('2017-04-17', '%Y-%m-%d')
         history_volume = {}
         #ipdb.set_trace()
         for line in open('data/days_sales_volume.DAT'):
@@ -250,8 +220,6 @@ class DateProcessing(object):
                     count = len(history_volume[(store_id, item_id)])
                     if count < 8:
                         continue
-                # if date < start_date:
-                #     continue
                 year, month, day = date.split('-')
                 tmp_x = list(self.date_transformation(year, month, day))
                 city = self.city2int[self.stores[store_id][0]]
@@ -285,27 +253,32 @@ class DateProcessing(object):
         print('x shape:{}  y shape:{} errors:{}\n'.format(self.x_all.shape, self.y_all.shape, count_error))
         if args.save_data:
             with open('data/store_goods_volume.DAT','w') as f:
-                for i in tqdm(range(len(x_all))):
+                for i in tqdm(xrange(len(x_all))):
                     f.write('{} {}\n'.format(x_all[i], y_all[i]))
             print('File saved to store_goods_volume.DAT\n')
 
 
-    def date_transformation(self, year, month, day):
-        # 1~7 denote Monday~Sunday
-        # 1~4 denote Spring~Winter
-        year, month, day = int(year), int(month), int(day)
-        weekday = dt.date.weekday(dt.date(year, month, day)) + 1 
+    def date_transformation(self, date):
+        # 0~6 denote Monday~Sunday
+        # 0~3 denote Spring~Winter
+        [year, month, day] = [int(i) for i in date.split('-')]
+        weekday = dt.date.weekday(dt.date(year, month, day)) + 1
         if 3 <= month <= 5:
-            season = 1
+            season = self.onehot(0, 4)
         elif 6 <= month <= 8:
-            season = 2
+            season = self.onehot(1, 4)
         elif 9 <= month <= 11:
-            season = 3
+            season = self.onehot(2, 4)
         else:
-            season = 4
-        return year, month, day, season, weekday
+            season = self.onehot(3, 4)
+        date_coding = []
+        date_coding.extend(season)
+        date_coding.extend(self.onehot(month-1, 12, 2))
+        date_coding.extend(self.onehot(day-1, 31, 3))
+        date_coding.extend(self.onehot(weekday-1, 7, 4)) # dim of date coding: 4+12+31+7=54
+        return date_coding, weekday 
 
-
+    @timeit
     def compute_inventory_by_warehouse(self):
         sales_data = {}
         in_out_data = {}
@@ -340,10 +313,9 @@ class DateProcessing(object):
                 inventory = stock_volume = return_volume = 0
             sales_data[warehouse_id][item_id][date].extend([inventory, stock_volume, return_volume])
 
-        start_date = dtdt.strptime('2017-04-01','%Y-%m-%d')
-        dates = [str(start_date+dt.timedelta(days=i)).split()[0] for i in xrange(387)]
+
+        dates = [str(self.start_date+dt.timedelta(days=i)).split()[0] for i in xrange(self.n_days)]
         count = count_error = 0
-        
         for warehouse_id in sales_data:
             for item_id in sales_data[warehouse_id]:
                 try:
@@ -368,9 +340,10 @@ class DateProcessing(object):
                         if count %1000000 == 0:
                             print(count)
         print('\ncount_error: %d\n' % count_error)
+        self.save_sales_inventory_stock_return(sales_data, 'warehouse_sales_inventory_stock_return')
         return sales_data
 
-
+    @timeit
     def get_sales_volume_by_warehouse(self):
         data = {}
         dates = []
@@ -404,13 +377,14 @@ class DateProcessing(object):
         print('days of sales volume: {}\nwarehouse_goods pairs: {}\ncount_error: {}'.format(
             len(data), len(data[date]), count_error))
         with open('data/warehouses_sales_volume.DAT','w') as f:
+            print('Saving file ...')
             for date in sorted(dates):
                 date = str(date).split()[0]
                 for (warehouse_id, item_id), sales_volume in data[date].iteritems():
                     f.write('{}\t{}\t{}\t{}\n'.format(date, warehouse_id, item_id, sales_volume))
             print('Successfully save warehouses_sales_volume.DAT\n')
 
-
+    @timeit
     def get_stock_return_by_warehouse(self):
         data = {}
         dates = []
@@ -445,79 +419,73 @@ class DateProcessing(object):
         print('days of stock and return: {}\nwarehouse_goods pairs: {}\ncount_error: {}'.format(
             len(data), len(data[date]), count_error))
         with open('data/warehouses_stock_return.DAT','w') as f:
+            print('Saving file ...')
             for date in sorted(dates):
                 date = str(date).split()[0]
                 for (warehouse_id, item_id), (stock_volume, return_volume) in data[date].iteritems():
                     f.write('{}\t{}\t{}\t{}\t{}\n'.format(date, warehouse_id, item_id, stock_volume, return_volume))
             print('Successfully save warehouses_stock_return.DAT\n')
 
-
+    @timeit
     def get_sales_volume_by_day(self):
         data = {}
         dates = []
         count = 0
-        for line in open('data/门店商品销售流水数据_2017.DAT'):
-            count += 1
-            if count %1000000 == 0:
-                print(count)
-            items = line.split()
-            date = items[0]
-            _, store_id, item_id, sales_volume = items[1].split('|')
-            if date in data:
-                if (store_id, item_id) in data[date]:
-                    data[date][(store_id, item_id)] += float(sales_volume)
+        file_names = ['门店商品销售流水数据_1', '门店商品销售流水数据_2', '门店商品销售流水数据_2017', '门店商品销售流水数据_2018']
+        for name in file_names:
+            print('\ncurrent file: %s\n' % name)
+            for line in open('data/%s.DAT' % name):
+                count += 1
+                if count %1000000 == 0:
+                    print(count)
+                items = line.split()
+                date = items[0]
+                _, store_id, item_id, sales_volume = items[1].split('|')
+                if date in data:
+                    if (store_id, item_id) in data[date]:
+                        data[date][(store_id, item_id)] += float(sales_volume)
+                    else:
+                        data[date][(store_id, item_id)] = float(sales_volume)
                 else:
-                    data[date][(store_id, item_id)] = float(sales_volume)
-            else:
-                dates.append(dtdt.strptime(date, '%Y-%m-%d'))
-                data[date] = {(store_id, item_id): float(sales_volume)}
+                    dates.append(dtdt.strptime(date, '%Y-%m-%d'))
+                    data[date] = {(store_id, item_id): float(sales_volume)}
 
-        for line in open('data/门店商品销售流水数据_2018.DAT'):
-            count += 1
-            if count %1000000 == 0:
-                print(count)
-            items = line.split()
-            date = items[0]
-            _, store_id, item_id, sales_volume = items[1].split('|')
-            if date in data:
-                if (store_id, item_id) in data[date]:
-                    data[date][(store_id, item_id)] += float(sales_volume)
-                else:
-                    data[date][(store_id, item_id)] = float(sales_volume)
-            else:
-                dates.append(dtdt.strptime(date, '%Y-%m-%d'))
-                data[date] = {(store_id, item_id): float(sales_volume)}
         print('days of sales volume: %d' % len(data))
         with open('data/days_sales_volume.DAT','w') as f:
+            print('Saving file ...')     
             for date in sorted(dates):
                 date = str(date).split()[0]
                 for (store_id, item_id), sales_volume in data[date].iteritems():
                     f.write('{}\t{}\t{}\t{}\n'.format(date, store_id, item_id, sales_volume))
             print('Successfully save days_sales_volume.DAT\n')
 
-
+    @timeit
     def get_stock_and_return_by_day(self):
         data = {}
         dates = []
         count = 0
-        for line in open('data/门店商品进退货数据.DAT'):
-            count += 1
-            if count %1000000 == 0:
-                print(count)
-            items = line.split()
-            date = items[0]
-            _, store_id, item_id, stock_volume, return_volume = items[1].split('|')
-            if date in data:
-                if (store_id, item_id) in data[date]:
-                    data[date][(store_id, item_id)][0] += float(stock_volume)
-                    data[date][(store_id, item_id)][1] += float(return_volume)
+        file_names = ['门店商品进退货数据1', '门店商品进退货数据2', '门店商品进退货数据']
+        for name in file_names:
+            print('\ncurrent file: %s\n' % name)
+            for line in open('data/%s.DAT' % name):
+                count += 1
+                if count %1000000 == 0:
+                    print(count)
+                items = line.split()
+                date = items[0]
+                _, store_id, item_id, stock_volume, return_volume = items[1].split('|')
+                if date in data:
+                    if (store_id, item_id) in data[date]:
+                        data[date][(store_id, item_id)][0] += float(stock_volume)
+                        data[date][(store_id, item_id)][1] += float(return_volume)
+                    else:
+                        data[date][(store_id, item_id)] = [float(stock_volume), float(return_volume)]
                 else:
-                    data[date][(store_id, item_id)] = [float(stock_volume), float(return_volume)]
-            else:
-                dates.append(dtdt.strptime(date, '%Y-%m-%d'))
-                data[date] = {(store_id, item_id): [float(stock_volume), float(return_volume)]}
+                    dates.append(dtdt.strptime(date, '%Y-%m-%d'))
+                    data[date] = {(store_id, item_id): [float(stock_volume), float(return_volume)]}
         print('days of stock and return volume: %d' % len(data))
         with open('data/days_stock_and_return_volume.DAT','w') as f:
+            print('Saving file ...')     
             for date in sorted(dates):
                 date = str(date).split()[0]
                 for (store_id, item_id),[stock_volume, return_volume] in data[date].iteritems():
@@ -526,7 +494,7 @@ class DateProcessing(object):
 
 
     def get_stores(self):
-        for i in range(1, self.stores_wb.nrows):
+        for i in xrange(1, self.stores_wb.nrows):
             store_id = self.stores_wb.cell(i, 0).value.strip()
             city = self.stores_wb.cell(i, 1).value.strip()
             dc = self.stores_wb.cell(i, 2).value.strip()
@@ -535,11 +503,11 @@ class DateProcessing(object):
             if store_id not in self.stores:
                 self.stores[store_id] = [self.city2int[city], self.dc2int[dc]]
                 # self.stores[store_id] = self.stores_wb.row_values(i, 1, 3)
-        print('stores: %d' % len(self.stores))
+        print('stores: %d\ncities: %d' % (len(self.stores), len(self.city2int)))
 
 
     def get_items(self):
-        for i in range(1, self.items_wb.nrows):
+        for i in xrange(1, self.items_wb.nrows):
             item_id = self.items_wb.cell(i, 0).value
             supplier_id = self.items_wb.cell(i, self.items_wb.ncols - 1).value
             if item_id not in self.items:
@@ -549,7 +517,7 @@ class DateProcessing(object):
 
 
     def get_suppliers(self):
-        for i in range(1, self.suppliers_wb.nrows):
+        for i in xrange(1, self.suppliers_wb.nrows):
             warehouse_id = str(int(float(self.suppliers_wb.cell(i, 0).value)))
             supplier_id = self.suppliers_wb.cell(i, 1).value
             data = self.suppliers_wb.row_values(i, 2, None)
@@ -564,7 +532,7 @@ class DateProcessing(object):
 
 
     def get_weather(self):
-        for i in range(1, self.weather_wb.nrows):
+        for i in xrange(1, self.weather_wb.nrows):
             date = self.weather_wb.cell(i, 0).value
             city = self.weather_wb.cell(i, 1).value
             weather = self.weather_wb.row_values(i, 2, None)
@@ -583,11 +551,11 @@ class DateProcessing(object):
                     self.weather[date][city] = weather
             else:
                 self.weather[date] = {city: weather}
-        print('day with weather: %d' % len(self.weather))
+        print('type of weather: %d\nday with weather: %d' % (len(self.weather2int), len(self.weather)))
             
 
     def get_promotions(self):
-        for i in range(1, self.promotions_wb.nrows):
+        for i in xrange(1, self.promotions_wb.nrows):
             #date_start = dtdt.strptime(self.promotions_wb.cell(i, 1).value.split()[0], '%Y-%m-%d')
             #date_end = dtdt.strptime(self.promotions_wb.cell(i, 2).value.split()[0], '%Y-%m-%d')
             date_start = self.promotions_wb.cell(i, 1).value.split()[0]
@@ -604,11 +572,11 @@ class DateProcessing(object):
                 self.promotions[item_id].append([date_start, date_end, promote_way, discount])
             else:
                 self.promotions[item_id] = [[date_start, date_end, promote_way, discount]]
-        print('items with promotions: %d' % len(self.promotions))
+        print('total promotion ways: %d\nitems with promotions: %d' % (len(self.promo2int), len(self.promotions)))
 
 
     def get_warehouses(self):
-        for i in range(1, self.warehouses_wb.nrows):
+        for i in xrange(1, self.warehouses_wb.nrows):
             store_id = self.warehouses_wb.cell(i, 0).value
             if store_id == 'NULL': # skip NULL stores
                 continue
@@ -628,8 +596,8 @@ class DateProcessing(object):
             supplier_id = self.items[item_id][-1]
             supplier_id = self.items[item_id][-1]
             for warehouse_id, data in self.suppliers[supplier_id].iteritems():
-                orderdays = [int(d) for d in data[0][0].split('/')[:-1]]
-                arrivedays = [int(d[2]) for d in data]
+                arrivedays = [int(d) for d in data[0][0].split('/')[:-1]]
+                orderdays = [int(d[2]) for d in data]
                 transtime = int(data[0][-1])
                 if warehouse_id in self.warehouse_item_transtime:
                     if item_id not in self.warehouse_item_transtime[warehouse_id]:
@@ -643,8 +611,10 @@ class DateProcessing(object):
 
 if __name__ == '__main__':
     data = DateProcessing()
-    sales_data = data.compute_inventory_by_warehouse()
-    data.save_sales_inventory_stock_return(sales_data, name='warehouse_sales_inventory_stock_return', mode='all')
+    # data.get_sales_volume_by_day()
+    # data.get_stock_and_return_by_day()
+    # data.get_sales_volume_by_warehouse()
     # data.get_stock_return_by_warehouse()
-    # sales_data = data.compute_inventory()
-    # data.save_sales_inventory_stock_return(sales_data, name='new_sales_inventory_stock_return', mode='all')
+    # data.compute_inventory_by_warehouse()
+    # data.compute_inventory()
+    print('\nAll done!\n')

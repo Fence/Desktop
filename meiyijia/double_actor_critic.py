@@ -24,8 +24,10 @@ class ActorCritic(object):
         self.emb_dim = args.emb_dim
         self.n_items = args.n_items
         self.n_stores = args.n_stores
+        self.dense_dim = args.dense_dim
         self.batch_size = args.batch_size
         self.conv_layers = args.conv_layers
+        self.mp_dim = args.mp_dim
 
         self.gamma = args.gamma
         self.epsilon = args.epsilon_start
@@ -77,10 +79,10 @@ class ActorCritic(object):
                 mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
                 inputs = mp
         else:
-            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(state_input)
-            mp = MaxPooling2D((100, 1), strides=(100, 1), padding='valid')(conv)
+            conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
+            mp = MaxPooling2D((self.mp_dim, 1), strides=(self.mp_dim, 1), padding='valid')(conv)
         flat = Flatten()(mp)
-        state_h1 = Dense(256, activation='relu')(flat)
+        state_h1 = Dense(self.dense_dim, activation='relu')(flat)
         output = Dense(1, activation='relu')(state_h1)
 
         model = Model(inputs=state_input, outputs=output)
@@ -99,10 +101,10 @@ class ActorCritic(object):
                 mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
                 inputs = mp
         else:
-            conv = Conv2D(32, (5, 5), strides=(1, 1), padding='valid', activation='relu')(state_input)
-            mp = MaxPooling2D((100, 1), strides=(100, 1), padding='valid')(conv)
+            conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
+            mp = MaxPooling2D((self.mp_dim, 1), strides=(self.mp_dim, 1), padding='valid')(conv)
         flat = Flatten()(mp)
-        state_h1 = Dense(256, activation='relu')(flat)
+        state_h1 = Dense(self.dense_dim, activation='relu')(flat)
         state_h2 = Dense(1, activation='relu')(state_h1)
 
         action_input = Input(shape=[1])
@@ -212,13 +214,15 @@ class ActorCritic(object):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('-emb_dim', type=int, default=30)
+    parser.add_argument('-emb_dim', type=int, default=73)
     parser.add_argument('-n_items', type=int, default=688)
     parser.add_argument('-n_stores', type=int, default=2000)
-    parser.add_argument('-min_dates', type=int, default=30)
+    parser.add_argument('-min_dates', type=int, default=100)
     parser.add_argument('-min_stores', type=int, default=100)
     parser.add_argument('-mem_size', type=int, default=5000)
     parser.add_argument('-conv_layers', type=int, default=1)
+    parser.add_argument('-dense_dim', type=int, default=32)
+    parser.add_argument('-mp_dim', type=int, default=50)
     parser.add_argument('-batch_size', type=int, default=32)
     parser.add_argument('-gamma', type=float, default=0.95)
     parser.add_argument('-epsilon_start', type=float, default=1.0)
@@ -230,7 +234,7 @@ def main():
     parser.add_argument('-target_steps', type=int, default=50)
     parser.add_argument('-train_steps', type=int, default=1000000)
     parser.add_argument('-gpu_rate', type=float, default=0.2)
-    parser.add_argument('-result_dir', type=str, default='results/ts50_year16_17')
+    parser.add_argument('-result_dir', type=str, default='results/dates100_stores100_random0_sqrt_absr_logr_layer1_dense32_cnv_stride22_ts50')
     args = parser.parse_args()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
     with open('%s.txt'%args.result_dir,'w') as args.logger:
@@ -273,17 +277,22 @@ def main():
                         last_step = i
                         epoch += 1
                         most_action = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])[-1]
-                        args.logger.write(('epoch {} steps {} avg_reward {} max_action {} most_action {} {}\n'.format(
-                                            epoch, steps, avg_reward, env.max_action, most_action[0], most_action[1])))
-                        print('max_action: {}\tmost_action: {}'.format(env.max_action, most_action))
+                        most_order = sorted(env.target_orders.iteritems(), key=lambda x:x[1])[-1]
+                        args.logger.write(('epoch {} steps {} avg_reward {} most_order {} {} most_action {} {}\n'.format(
+                                            epoch, steps, avg_reward, most_order[0], most_order[1], most_action[0], most_action[1])))
+                        print('most_order: {}\tmost_action: {}'.format(most_order, most_action))
                         print('epoch {}\tsteps {}\tavg_reward: {:.2f}\n'.format(epoch, steps, avg_reward))
                         
             except KeyboardInterrupt:
                 print('\nManually stop the program !\n')
 
-        args.logger.write('\nmax_action: {}\nsorted seen actions:\n'.format(env.max_action))
-        for k,v in sorted(env.seen_actions.iteritems(), key=lambda x:x[1], reverse=True):
-            args.logger.write('{}: {}\n'.format(k*10, v))
+        actions = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])
+        orders = sorted(env.target_orders.iteritems(), key=lambda x:x[1])
+        args.logger.write('\nsorted target actions and seen actions:\n')
+        num = len(actions) if len(actions) <= len(orders) else len(orders)
+        for i in range(num):
+            args.logger.write('{:<5}: {:<5}\t{:<5}: {:<5}\n'.format(orders[i][0], orders[i][1], actions[i][0], actions[i][1]))
+        plt.switch_backend('pdf')
         plt.subplot(211)
         plt.plot(log_steps, log_rewards)
         plt.subplot(212)
