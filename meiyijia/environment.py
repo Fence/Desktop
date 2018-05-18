@@ -10,37 +10,44 @@ from data_processor import DateProcessing
 
 class Environment(object):
     """docstring for Environment"""
-    def __init__(self, args):
-        self.data = DateProcessing()
-        self.wh_item = self.data.warehouse_item # {warehouse_id: [item_ids]}
+    def __init__(self, args, data):
+        #self.data = DateProcessing()
+        self.items = data.items
+        self.stores = data.stores
+        self.promotions = data.promotions
+        self.date_transformation = data.date_transformation
+        self.wh_item = json.load(open('data/warehouse_item_dict.json','r')) # data.warehouse_item # {warehouse_id: [item_ids]}
         self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
-        self.wh_item_time = self.data.warehouse_item_transtime
+        self.wh_item_time = data.warehouse_item_transtime
         self.wh_ind = self.item_ind = 0
-        #self.stores = self.data.stores.keys()
-        self.dc2num = self.data.int2onehot(self.data.dc2int, 5)
-        self.city2num = self.data.int2onehot(self.data.city2int, 6)
-        self.promo2num = self.data.int2onehot(self.data.promo2int, 7)
+        self.dc2num = data.int2onehot(data.dc2int, 5)
+        self.city2num = data.int2onehot(data.city2int, 6)
+        self.promo2num = data.int2onehot(data.promo2int, 7)
+        self.use_padding = args.use_padding
         self.min_stores = args.min_stores
         self.min_dates = args.min_dates
         self.n_stores = args.n_stores
         self.emb_dim = args.emb_dim
         self.random = args.random
-        self.start_date = '2016-11-01'
-        self.end_date = '2017-12-31'
+        self.train_start_date = args.train_start_date
+        self.test_start_date = args.test_start_date
+        self.train_end_date = args.train_end_date
+        self.test_end_date = args.test_end_date
         #self.max_action = 0
         self.action_count = 0
         self.seen_actions = {}
         self.target_orders = {}
-        #self.get_valid_resart()
+        #self.restart(is_train)
 
 
-    def get_valid_resart(self):
+    def restart(self, is_train):
         status = -1
         while status < 0:
-            status = self.restart(self.random)
+            status = self._restart(self.random, is_train)
 
 
-    def restart(self, random):
+    def _restart(self, random, is_train):
+        #ipdb.set_trace()
         while True:
             if random:
                 self.wh_ind = np.random.randint(len(self.wh_item))
@@ -57,65 +64,90 @@ class Environment(object):
                     self.item_ind += 1
                 self.item_id = self.wh_item[self.warehouse_id][self.item_ind]
             try:
-                self.wh_item_data = json.load(
-                    open('data/items_data/%s_%s.json'%(self.warehouse_id, self.item_id),'r'))
-                break
+                self.wh_item_data = json.load(open('data/items_data/%s_%s.json'%(self.warehouse_id, self.item_id),'r'))
             except:
                 continue
+            if len(self.wh_item_data) < self.min_stores: # no more than 100 stores saling this item
+                #if is_train:
+                #    print('wh {} item {} < {} stores\n'.format(self.warehouse_id, self.item_id, self.min_stores))
+                continue
+            else:
+                values = self.get_warehouse_item_features()
+                if len(values) == 1:
+                    continue
+                else:
+                    self.valid_days, self.orderdays, self.arrivedays, self.transp_time = values
+                    break
+        if is_train:
+            self.start_date, self.end_date = self.train_start_date, self.train_end_date
+        else:
+            self.start_date, self.end_date = self.test_start_date, self.test_end_date
         self.cur_date = self.start_date
-        #return self.get_valid_state()
+        return self.get_valid_state(is_train)
 
     
-    def get_valid_state(self):
+    def get_valid_state(self, is_train):
         while True:
-            values = self.generate_state(self.cur_date)
+            values = self.generate_state(self.cur_date, is_train)
             if values[-1] > 0:
                 self.state, self.pred_time = values[0], values[1]
                 return values[-1]
             elif values[-1] == -1: # less than 100 stores
                 return -1
-            else: # values[-1] == 0, current date doesn't exist
-                self.cur_date = self.update_date(self.cur_date)
-                if self.cur_date > self.end_date:
-                    return -2
+            else: # values[-1] == 0, current item/warehouse/date doesn't exist
+                # self.cur_date = self.update_date(self.cur_date)
+                # if self.cur_date > self.end_date:
+                #     return -2
+                return -2
 
 
-    def generate_state(self, cur_date):
+    def get_warehouse_item_features(self):
+        # get warehouse-item features
+        try:
+            valid_days = float(self.items[self.item_id][-2])
+            orderdays, arrivedays, transp_time = self.wh_item_time[self.warehouse_id][self.item_id]
+        except Exception as e:
+            # ipdb.set_trace()
+            return [-1]
+        # if len(self.wh_item_data) < self.min_stores: # no more than 100 stores saling this item
+        #     if is_train:
+        #         print('wh {} item {} < {} stores\n'.format(self.warehouse_id, self.item_id, self.min_stores))
+        #     return [-1]
+        next_week_order_days = [d+7 for d in orderdays]
+        next_week_arrive_days = [d+7 for d in arrivedays]
+        orderdays.extend(next_week_order_days)
+        arrivedays.extend(next_week_arrive_days)
+        return valid_days, orderdays, arrivedays, transp_time
+
+
+    def generate_state(self, cur_date, is_train):
         """ all features of an item_warehouse state: 73 (no city and no weather)
-        sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, trans_time: 1,
+        sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, transp_time: 1,
         season: 4, month: 12,    day: 31,  weekday: 7, promotion: 8+1,  weather: 7     city: 21
         """
         state = np.zeros([self.n_stores, self.emb_dim], dtype=np.float32)
         valid_count = 0
-        # get warehouse-item features
-        try:
-            valid_days = float(self.data.items[self.item_id][-2])
-            orderdays, arrivedays, transp_time = self.wh_item_time[self.warehouse_id][self.item_id]
-            tmp_date, weekday = self.data.date_transformation(cur_date)
-            od = sorted(zip(range(len(orderdays)), orderdays), key=lambda x:x[1]) # sort by weekday
-            for i in xrange(len(od)):
-                if weekday <= od[i][1]:
-                    tmp_time = arrivedays[od[i][0]] - weekday
-                    pred_start = tmp_time if tmp_time >= 0 else tmp_time + 7
-                    tmp_time = arrivedays[ (od[i][0] + 1) % len(od) ] - weekday
-                    pred_end = tmp_time if tmp_time >= 0 else tmp_time + 7
-                    assert pred_end >= pred_start
+
+        date_emb, weekday = self.date_transformation(cur_date)
+        od = sorted(zip(range(len(self.orderdays)), self.orderdays), key=lambda x:x[1]) # sort by weekday
+        #ipdb.set_trace()
+        for i in xrange(len(od)):
+            if weekday <= od[i][1]:
+                tmp_start = self.arrivedays[od[i][0]] - weekday
+                pred_start = tmp_start if tmp_start >= 0 else tmp_start + 7
+                tmp_end = self.arrivedays[ (od[i][0] + 1) % len(od) ] - self.arrivedays[od[i][0]]
+                pred_end = pred_start + tmp_end if tmp_end >= 0 else pred_start + tmp_end + 7
+                # assert pred_end >= pred_start
+                break
+        pred_time = [pred_start, pred_end]
+        promotion = np.zeros(9) # way, discount
+        if self.item_id in self.promotions:
+            for p in self.promotions[self.item_id]:
+                # if this item is promoted at this day
+                if p[0] <= cur_date <= p[1]: 
+                    promotion[:-1] = self.promo2num[p[-2]]
+                    promotion[-1] = p[-1]
                     break
-            pred_time = [pred_start, pred_end]
-            promotion = np.zeros(9) # way, discount
-            if self.item_id in self.data.promotions:
-                for p in self.data.promotions[self.item_id]:
-                    # if this item is promoted at this day
-                    if p[0] <= cur_date <= p[1]: 
-                        promotion[:-1] = self.promo2num[p[-2]]
-                        promotion[-1] = p[-1]
-                        break
-        except Exception as e:
-            #print(e)
-            return [0]
-        if len(self.wh_item_data) < self.min_stores: # no more than 100 stores saling this item
-            print('wh {} item {} < {} stores\n'.format(self.warehouse_id, self.item_id, self.min_stores))
-            return [-1]
         # get store-specific features
         count_less_than_dates = 0
         for store_id in self.wh_item_data:
@@ -123,31 +155,36 @@ class Environment(object):
                 count_less_than_dates += 1
                 continue
             if cur_date in self.wh_item_data[store_id]:
-                try:
-                    x_i_j = self.wh_item_data[store_id][cur_date]
-                    deliver_time = self.dc2num[self.data.stores[store_id][1]]
-                except Exception as e:
-                    #print(e)
-                    continue
-                # no city and no weather
-                x_i_j.extend(deliver_time)
-                x_i_j.append(valid_days)
-                x_i_j.append(transp_time)
-                x_i_j.extend(tmp_date)
-                x_i_j.extend(promotion)
-                #ipdb.set_trace()
-                state[valid_count][:len(x_i_j)] = x_i_j
-                valid_count += 1
-                if valid_count >= self.n_stores:
-                    break
-            
-        if cur_date == self.start_date:
+                x_i_j = self.wh_item_data[store_id][cur_date]
+            # pad zero sales, inventory, stock and return values for missing dates
+            elif self.use_padding:
+                x_i_j = [0, 0, 0, 0]
+            else:
+                continue
+            try:
+                deliver_time = self.dc2num[self.stores[store_id][1]]
+            except Exception as e:
+                #print(e)
+                continue
+            # no city and no weather
+            x_i_j.extend(deliver_time)
+            x_i_j.append(self.valid_days)
+            x_i_j.append(self.transp_time)
+            x_i_j.extend(date_emb)
+            x_i_j.extend(promotion)
+            #ipdb.set_trace()
+            state[valid_count][:len(x_i_j)] = x_i_j
+            valid_count += 1
+            if valid_count >= self.n_stores:
+                break
+        #ipdb.set_trace()
+        if cur_date == self.start_date and is_train:
             print('wh {} item {} < {} dates: {}/{} stores\n'.format(
                 self.warehouse_id, self.item_id, self.min_dates, count_less_than_dates, len(self.wh_item_data)))
         return state, pred_time, valid_count
 
 
-    def step(self, action):
+    def step(self, action, is_train):
         tmp_date = self.update_date(self.cur_date, self.pred_time[0])
         target_sales = target_stocks = target_returns = 0
         #ipdb.set_trace()
@@ -162,7 +199,7 @@ class Environment(object):
                 continue
             tmp_date = self.update_date(tmp_date)
 
-        target_order = int(target_stocks - target_returns) # target_sales
+        target_order = target_stocks - target_returns # target_sales
         act = action# % 10
         self.action_count += 1
         if act in self.seen_actions:
@@ -180,7 +217,8 @@ class Environment(object):
         #     print('max_action: {}  most_action: {}\n'.format(self.max_action, most_action))
         
         # r = f(sales, stocks, returns, inventory)
-        reward = 100 - 10*np.sqrt(np.abs(target_order - action))
+        #reward = 100 - 10*np.sqrt(np.abs(target_order - action))
+        reward = -self.clip_reward(np.abs(target_order - action), 500)
         # if target_order - action >= 0:
         #     reward = -100 * np.log(target_order - action + 1)
         # else:
@@ -189,22 +227,28 @@ class Environment(object):
         #     reward = 10 - np.sqrt(np.abs(target_order - action))
         # else:
         #     reward = -150 # punish that requried future dates are not appear in the datasets
+        #print(self.cur_date)
         self.cur_date = self.update_date(self.cur_date)
-        status = self.get_valid_state() # current state is new state
+        status = self.get_valid_state(is_train) # current state is new state
         if self.cur_date > self.end_date or status < 0:
             #ipdb.set_trace()
             terminal = True # change terminal 1
-            self.get_valid_resart() # current state is new state
+            self.restart(is_train) # current state is new state
         else:
             terminal = False # change terminal 2
         return self.state, reward, terminal
 
 
+    def clip_reward(self, raw_reward, u_bound):
+        new_reward = raw_reward if raw_reward <= u_bound else u_bound
+        return new_reward
+
+
     def test_act(self):
         self.cur_date = self.update_date(self.cur_date)
         if self.cur_date > self.end_date:
-            self.get_valid_resart()
-        self.get_valid_state()
+            self.restart(is_train=True)
+        self.get_valid_state(is_train=True)
 
 
     def update_date(self, cur_date, days=1):
@@ -250,15 +294,38 @@ class Environment(object):
             print('Finish!')
 
 
+    def padding_missing_data(self):
+        dates = [self.update_date('2016-11-01', i) for i in xrange(538)]
+        for w, items in self.wh_item.iteritems():
+            for i in items:
+                try:
+                    item_stores = json.load(open('data/items_data/%s_%s.json'%(w, i)))
+                    for store_id in item_stores:
+                        valid_days = 0
+                        for date in dates:
+                            if date not in item_stores[store_id]:
+                                item_stores[store_id][date] = [0, 0, 0, 0]
+                            else:
+                                valid_days += 1
+                        item_stores[store_id]['valid_days'] = valid_days
+                    with open('data/full_items_data/%s_%s.json'%(w, i),'w') as f:
+                        json.dump(item_stores, f, indent=2)
+                        print('Saved data/full_items_data/%s_%s.json'%(w, i))
+
+                except:
+                    continue
+        print('All done!')
+
+
     def test_multi_threads(self, n_threads):
         import threading
         self.date_states = {}
-        self.restart(self.random)
+        self._restart(self.random, is_train=True)
         records = {'valid': 0}
         def get_a_state(self, thread_id, n_threads, records):
             cur_date = self.update_date(self.start_date, thread_id)
             while cur_date <= self.end_date:
-                values = self.generate_state(cur_date)
+                values = self.generate_state(cur_date, is_train=True)
                 if values[-1] <= 0:
                     self.date_states[cur_date] = {'state': [], 'pred_time': []}
                 else:
@@ -275,7 +342,6 @@ class Environment(object):
         print(records['valid'], len(self.date_states))
 
 
-
 def test():
     data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
     for w in data:
@@ -288,6 +354,7 @@ def test():
 
 
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('-emb_dim', type=int, default=73)
@@ -296,9 +363,11 @@ if __name__ == '__main__':
     parser.add_argument('-min_stores', type=int, default=100)
     parser.add_argument('-random', type=bool, default=False)
     args = parser.parse_args()
+    data = DateProcessing()
+    env = Environment(args, data)
     ipdb.set_trace()
-    env = Environment(args)
-    env.test_multi_threads(4)
+    env.padding_missing_data()
+    # env.test_multi_threads(4)
     # env.compute_dataset_features()
     # for i in xrange(400):
     #     env.test_act()

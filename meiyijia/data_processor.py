@@ -1,4 +1,5 @@
 # coding: utf-8
+import os
 import gc
 import json
 import xlrd
@@ -185,12 +186,12 @@ class DateProcessing(object):
                             count += 1
                             if count %1000000 == 0:
                                 print(count)
-                self.save_sales_inventory_stock_return(sales_data[warehouse_id][item_id], 'items_data/%s_%s'%(warehouse_id, item_id))
+                self.save_file(sales_data[warehouse_id][item_id], 'items_data/%s_%s'%(warehouse_id, item_id))
         print('\ncount_error: %d\n' % count_error)
         return sales_data
 
 
-    def save_sales_inventory_stock_return(self, data, name='save_file'):
+    def save_file(self, data, name='save_file'):
         with open('data/%s.json' % name, 'w') as f:
             print('Saving file ...')     
             json.dump(data, f, indent=2)
@@ -340,7 +341,7 @@ class DateProcessing(object):
                         if count %1000000 == 0:
                             print(count)
         print('\ncount_error: %d\n' % count_error)
-        self.save_sales_inventory_stock_return(sales_data, 'warehouse_sales_inventory_stock_return')
+        self.save_file(sales_data, 'warehouse_sales_inventory_stock_return')
         return sales_data
 
     @timeit
@@ -607,6 +608,8 @@ class DateProcessing(object):
                 else:
                     self.warehouse_item[warehouse_id] = [item_id]
                     self.warehouse_item_transtime[warehouse_id] = {item_id: [orderdays, arrivedays, transtime]}
+        if not os.path.exists('data/warehouse_item_dict.json'):
+            self.save_file(self.warehouse_item, 'warehouse_item_dict')
 
 
 if __name__ == '__main__':
