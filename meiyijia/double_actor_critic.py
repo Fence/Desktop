@@ -19,7 +19,7 @@ from environment import Environment
 
 class ActorCritic(object):
     """docstring for ActorCritic"""
-    def __init__(self, env, sess, args):
+    def __init__(self, env, sess):
         self.env = env
         self.sess = sess
         self.emb_dim = args.emb_dim
@@ -83,7 +83,7 @@ class ActorCritic(object):
             mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
         flat = Flatten()(mp)
         state_h1 = Dense(self.dense_dim, activation='relu')(flat)
-        output = Dense(1, activation='relu')(state_h1)
+        output = Dense(1)(state_h1)
 
         model = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.001)
@@ -238,7 +238,7 @@ class ActorCritic(object):
 
 class A2CNets(object):
     """docstring for A2CNets"""
-    def __init__(self, args, scope_name):
+    def __init__(self, scope_name):
         self.emb_dim = args.emb_dim
         self.n_stores = args.n_stores
         self.dense_dim = args.dense_dim
@@ -254,11 +254,16 @@ class A2CNets(object):
             critic_model_weights = self.critic_model.trainable_weights
             self.critic_action_grads = tf.gradients(self.critic_model.output, self.critic_action_input)
             self.critic_weight_grads = tf.gradients(self.critic_model.output, critic_model_weights)
-            self.grads = zip(self.critic_weight_grads, critic_model_weights)
+            #self.grads = zip(self.critic_weight_grads, critic_model_weights)
 
+            self.actor_critic_grad = tf.placeholder(tf.float32, [None, 1]) 
             actor_model_weights = self.actor_model.trainable_weights
-            self.actor_grads = tf.gradients(self.actor_model.output, actor_model_weights, -self.critic_action_grads[0])
-            self.grads.extend(zip(self.actor_grads, actor_model_weights))
+            self.actor_grads = tf.gradients(self.actor_model.output, actor_model_weights, self.actor_critic_grad)#-self.critic_action_grads[-1])
+            #self.grads.extend(zip(self.actor_grads, actor_model_weights))
+            self.grads = zip(self.actor_grads, actor_model_weights)
+
+            self.optimize = tf.train.AdamOptimizer(args.learning_rate).apply_gradients(self.grads)
+            
 
 
     def build_actor_network(self, name='actor'):
@@ -274,7 +279,7 @@ class A2CNets(object):
             mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
         flat = Flatten()(mp)
         state_h1 = Dense(self.dense_dim, activation='relu')(flat)
-        output = Dense(1, activation='relu')(state_h1)
+        output = Dense(1)(state_h1)
 
         model = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.001)
@@ -312,11 +317,11 @@ class A2CNets(object):
 
 class A2CSingleThread(object):
     """docstring for A2CSingleThread"""
-    def __init__(self, args, data, thread_id, master):
+    def __init__(self, data, thread_id, master):
         self.thread_id = thread_id
         self.env = Environment(args, data)
         self.master = master
-        self.local_net = A2CNets(args, 'local_net%d'%thread_id)
+        self.local_net = A2CNets('local_net%d'%thread_id)
         self.batch_size = args.batch_size
         self.gamma = args.gamma
         self.epsilon = args.epsilon_start
@@ -327,22 +332,120 @@ class A2CSingleThread(object):
         
 
 
-    def sync_network(self, source_net):
+    def sync_network(self, sess, source_net):
         source_actor_weights  = source_net.actor_model.get_weights()
-        local_actor_weights = self.local_net.actor_model.get_weights()
-        
+        local_actor_weights = self.local_net.actor_model.trainable_weights #get_weights()
+        ops = []
         for i in xrange(len(source_actor_weights)):
-            local_actor_weights[i] = source_actor_weights[i]
-        self.local_net.actor_model.set_weights(local_actor_weights)
+            ops.append(tf.assign(local_actor_weights[i], source_actor_weights[i]))
+        sess.run(ops)
+        
+        # for i in xrange(len(source_actor_weights)):
+        #     local_actor_weights[i] = source_actor_weights[i]
+        # self.local_net.actor_model.set_weights(local_actor_weights)
 
         source_critic_weights  = source_net.critic_model.get_weights()
-        local_critic_weights = self.local_net.critic_model.get_weights()
+        local_critic_weights = self.local_net.critic_model.trainable_weights #get_weights()
+        ops = []
+        for i in xrange(len(source_critic_weights)):
+            ops.append(tf.assign(local_critic_weights[i], source_critic_weights[i]))
+        sess.run(ops)
         
-        for i in xrange(len(source_actor_weights)):
-            local_critic_weights[i] = source_critic_weights[i]
-        self.local_net.critic_model.set_weights(local_critic_weights)
+        # for i in xrange(len(source_actor_weights)):
+        #     local_critic_weights[i] = source_critic_weights[i]
+        # self.local_net.critic_model.set_weights(local_critic_weights)
 
 
+    def act(self, cur_state):
+        if self.epsilon > self.epsilon_end:
+            self.epsilon *= self.epsilon_decay
+        if np.random.random() < self.epsilon or args.cur_train_epoch == 0:
+            while True:
+                action = np.random.randn(1)[0]*self.max_random_action + self.max_random_action
+                if action > 0:
+                    return int(action)
+        return int(self.local_net.actor_model.predict(cur_state)[0][0])
+
+
+    def forward_explore(self):
+        terminal = False
+        train_step = 0
+        states, actions, rewards = [], [], []
+        while not terminal and train_step <= self.batch_size:
+            cur_state = self.env.get_state()
+            tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
+            action = self.act(tmp_state)
+            _, reward, terminal = self.env.step(action, is_train=True)
+            cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
+            states.append(cur_state)
+            actions.append(action)
+            rewards.append(reward)
+            train_step += 1
+        states = np.array(states, dtype=np.float32)
+        actions = np.array(actions, dtype=np.float32)
+        rewards = np.array(rewards, dtype=np.float32)
+        return states, actions, rewards, train_step-1 
+
+
+    def train(self, sess, g):
+        self.env.restart(is_train=True)
+        while args.train_step <= args.max_train_steps:
+            if args.cur_train_epoch > 0:
+                self.sync_network(sess, self.master.shared_net)
+
+            states, actions, rewards, train_step = self.forward_explore() # states[1:] are new states
+            cur_states = states[:-1]
+            new_states = states[1:]
+            target_actions = self.master.shared_net.actor_model.predict(new_states)
+            future_rewards = self.master.shared_net.critic_model.predict([new_states, target_actions])#[0][0]
+            tmp_rewards = rewards[:-1]
+            tmp_rewards += self.gamma * future_rewards[:, 0]
+            while True:
+                if not args.is_update:
+                    args.is_update = True
+                    break
+            self.master.shared_net.critic_model.fit([new_states, actions[:-1]], tmp_rewards, verbose=0)
+
+            predicted_actions = self.local_net.actor_model.predict(cur_states)
+            grads = sess.run(self.local_net.critic_action_grads, feed_dict={
+                                        self.local_net.critic_state_input:  cur_states,
+                                        self.local_net.critic_action_input: predicted_actions,})[0]
+                                        #self.local_net.actor_state_input:   cur_states})
+
+            _, step = sess.run([self.master.shared_net.optimize, self.master.global_step], feed_dict={
+                                self.master.shared_net.actor_state_input: cur_states,
+                                self.master.shared_net.actor_critic_grad: grads})
+            args.is_update = False
+
+            args.train_step += train_step
+            args.cur_train_epoch += 1
+            print('Global epoch: {} Thread: {}  step: {}'.format(args.cur_train_epoch, self.thread_id, args.train_step))
+            if args.cur_train_epoch % args.test_per_n_epochs == 0:
+                test_step, test_reward, avg_test_reward = self.master.test(args.test_epochs)
+                print('test_epochs {} \t test_steps {} \t avg_test_reward {}'.format(args.test_epochs, test_step, avg_test_reward))
+
+    
+
+class AsyActorCritic(object):
+    """docstring for AsyActorCritic"""
+    def __init__(self, sess, data):
+        self.shared_net = A2CNets('global_net')
+        self.env = Environment(args, data)
+        self.sess = sess
+        self.gamma = args.gamma
+        self.epsilon = args.epsilon_start
+        self.epsilon_end = args.epsilon_end
+        self.epsilon_decay = args.epsilon_decay
+        self.max_random_action = args.max_random_action
+        self.jobs = []
+
+        for thread_id in xrange(args.n_jobs):
+            self.jobs.append(A2CSingleThread(data, thread_id, self))
+        
+        self.global_step = tf.get_variable("global_step", [], initializer=tf.constant_initializer(0), trainable=False)
+        self.sess.run(tf.global_variables_initializer())
+
+    
     def act(self, cur_state):
         if self.epsilon > self.epsilon_end:
             self.epsilon *= self.epsilon_decay
@@ -351,114 +454,75 @@ class A2CSingleThread(object):
                 action = np.random.randn(1)[0]*self.max_random_action + self.max_random_action
                 if action > 0:
                     return int(action)
-        return int(self.local_net.actor_model.predict(cur_state)[0][0])
+        return int(self.shared_net.actor_model.predict(cur_state)[0][0])
 
 
-    def forward_explore(self, train_step):
-        terminal = False
-        t_start = train_step
-        states, actions, rewards = [], [], []
-        while not terminal and (train_step - t_start <= self.batch_size):
-            cur_state = self.env.get_state()
-            tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
-            action = self.act(tmp_state)
-            _, reward, terminal = self.env.step(action)
-            cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
-            states.append(cur_state)
-            actions.append(action)
-            rewards.append(reward)
-            train_step += 1
-        return states, actions, rewards
+    def move(self, is_train):
+        cur_state = self.env.get_state()
+        tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
+        action = self.act(tmp_state)
+        new_state, reward, terminal = self.env.step(action, is_train)
+        cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
+        new_state = np.reshape(new_state, [new_state.shape[0], new_state.shape[1], 1])
+        return cur_state, action, reward, new_state, terminal
+
+    @timeit
+    def test(self, epochs):
+        print('Testing ...')
+        self.env.restart(is_train=False)
+        test_step = test_reward = 0
+        for epoch in xrange(epochs):
+            terminal = False
+            while not terminal:
+                cur_state, action, reward, new_state, terminal = self.move(is_train=False)
+                test_reward += reward
+                test_step += 1
+            #print('test epoch: {}/{} \t test step: {}'.format(epoch+1, epochs, test_step))
+        #print('avg_test_reward:', test_reward/test_step)
+        return test_step, test_reward, test_reward/test_step
 
 
-    def train(self):
-        while flags.train_step <= flags.max_train_steps:
-            train_step = 0
-            #self.sync_network(self.master.shared_net)
-            if flags.train_step > 0:
-                self.master.sync_network(self.local_net, self.master.shared_net)
-
-            states, actions, rewards = self.forward_explore(train_step) # states[1:] are new states
-            target_actions = self.master.shared_net.actor_model.predict(states[1:])
-            future_rewards = self.master.shared_net.critic_model.predict([states[1:], target_actions])#[0][0]
-            tmp_rewards = rewards[:-1]
-            tmp_rewards += self.gamma * future_rewards[:, 0]
-            self.local_net.critic_model.fit([states[:-1], actions[:-1]], tmp_rewards, verbose=0)
-
-            predicted_actions = self.local_net.actor_model.predict(states[:-1])
-            grads = self.master.sess.run(self.local_net.grads, feed_dict={
-                                        self.local_net.critic_state_input:  states[:-1],
-                                        self.local_net.critic_action_input: predicted_actions,
-                                        self.local_net.actor_state_input: states[:-1]})
-
-            self.master.sess.run([self.master.shared_net.optimize, self.master.global_step], feed_dict={
-                                self.master.shared_net.grads: grads})
-            flags.train_step += train_step
-            print('Thread: {}  step: {}'.format(self.thread_id, flags.train_step))
-
-    
-
-class AsyActorCritic(object):
-    """docstring for AsyActorCritic"""
-    def __init__(self, sess, args, data):
-        self.shared_net = A2CNets(args, 'global_net')
-        self.optimize = tf.train.AdamOptimizer(args.learning_rate).apply_gradients(self.shared_net.grads)
-        self.global_step = tf.get_variable("global_step", [], initializer=tf.constant_initializer(0), trainable=False)
-        self.sess = sess
-        self.jobs = []
-        for thread_id in xrange(args.n_jobs):
-            self.jobs.append(A2CSingleThread(args, data, thread_id, self))
-
-        self.sess.run(tf.global_variables_initializer())
-
-
-    def sync_network(self, local_net, source_net):
-        source_actor_weights  = source_net.actor_model.get_weights()
-        local_actor_weights = local_net.actor_model.get_weights()
-        
-        for i in xrange(len(source_actor_weights)):
-            local_actor_weights[i] = source_actor_weights[i]
-        local_net.actor_model.set_weights(local_actor_weights)
-
-        source_critic_weights  = source_net.critic_model.get_weights()
-        local_critic_weights = local_net.critic_model.get_weights()
-        
-        for i in xrange(len(source_actor_weights)):
-            local_critic_weights[i] = source_critic_weights[i]
-        local_net.critic_model.set_weights(local_critic_weights)
-
-    
-    def _train(self, thread_id):
-        self.graph = tf.get_default_graph()
-        with self.graph.as_default():
-            self.jobs[thread_id].train()
+    def _train(self, thread_id, g, sess):
+        with g.as_default():
+            self.jobs[thread_id].train(sess, g)
 
 
     def train(self):
         import threading
-        flags.train_step = 0
-        threads = [threading.Thread(target=self._train, args=(i,)) for i in xrange(len(self.jobs))]
+        args.is_update = False
+        args.train_step = 0
+        args.cur_train_epoch = 0
+        # self.jobs[0].train()
+        # self.jobs[1].train()
+        g = tf.get_default_graph()
+        threads = [threading.Thread(target=self._train, args=(i, g, self.sess)) for i in xrange(len(self.jobs))]
         for thread in threads:
             thread.start()
+            time.sleep(1)
+        for thread in threads:
             thread.join()
 
-
-def test_Asyn(args):
+@timeit
+def test_Asyn():
     data = DateProcessing()
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
-    global graph
-    graph = tf.get_default_graph()
     with tf.Session(config=tf.ConfigProto(gpu_options=gpu_options)) as sess:
-        ipdb.set_trace()
-        model = AsyActorCritic(sess, args, data)
-        model.train()
-
+        #ipdb.set_trace()
+        K.set_session(sess)
+        K.set_image_data_format('channels_last')
+        try:
+            model = AsyActorCritic(sess, data)
+            model.train()
+        except KeyboardInterrupt:
+            print('\nManually stop the program !\n')
 
  
-
-tf.app.flags.DEFINE_integer("max_train_steps", 1e4, "train max time step")
-tf.app.flags.DEFINE_integer("train_step", 0, "train step. unchanged")
-flags = tf.app.flags.FLAGS
+# tf.app.args.DEFINE_integer("max_train_steps", 1e4, "train max time step")
+# tf.app.args.DEFINE_integer("test_per_n_epochs", 10, "train max time step")
+# tf.app.args.DEFINE_integer("cur_train_epoch", 0, "train max time step")
+# tf.app.args.DEFINE_integer("is_update", False, "train max time step")
+# tf.app.args.DEFINE_integer("train_step", 0, "train step. unchanged")
+# args = tf.app.args.FLAGS
 def arg_init():
     parser = argparse.ArgumentParser()
     # environment arguments
@@ -467,14 +531,14 @@ def arg_init():
     parser.add_argument('-test_start_date',   type=str, default='2018-01-01')
     parser.add_argument('-test_end_date',     type=str, default='2018-03-31')
     parser.add_argument('-min_dates',         type=int, default=100)
-    parser.add_argument('-min_stores',        type=int, default=100)
+    parser.add_argument('-min_stores',        type=int, default=10)
     parser.add_argument('-use_padding',       type=int, default=1)
-    parser.add_argument('-random',            type=int, default=0)
+    parser.add_argument('-random',            type=int, default=1)
     # network arguments
     parser.add_argument('-emb_dim',           type=int, default=73)
-    parser.add_argument('-n_stores',          type=int, default=1000)
-    parser.add_argument('-conv_layers',       type=int, default=2)
-    parser.add_argument('-dense_dim',         type=int, default=32)
+    parser.add_argument('-n_stores',          type=int, default=500)
+    parser.add_argument('-conv_layers',       type=int, default=1)
+    parser.add_argument('-dense_dim',         type=int, default=64)
     parser.add_argument('-maxp_dim',          type=int, default=50)
     parser.add_argument('-batch_size',        type=int, default=32)
     # agent arguments
@@ -490,13 +554,14 @@ def arg_init():
     parser.add_argument('-target_steps',      type=int, default=100)
     parser.add_argument('-test_epochs',       type=int, default=50)
     parser.add_argument('-test_per_n_epochs', type=int, default=2)
-    parser.add_argument('-train_steps',       type=int, default=1000000)
-    parser.add_argument('-result_dir',        type=str, default='results/test50_tep2_pad1_abs_reward')
+    parser.add_argument('-train_step',        type=int, default=0)
+    parser.add_argument('-max_train_steps',   type=int, default=1000000)
+    parser.add_argument('-result_dir',        type=str, default='results/bs64_ly1_ms10_ns500_random1_test50_tep2_pad1_abs_reward')
     parser.add_argument('-gpu_rate',          type=float, default=0.25)
     return parser.parse_args()
 
 
-def main(args):
+def main():
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
     with open('%s.txt'%args.result_dir,'w') as args.logger:
         for (k,v) in sorted(args.__dict__.iteritems(), key=lambda x:x[0]):
@@ -508,13 +573,13 @@ def main(args):
             start = time.time()
             data = DateProcessing()
             env = Environment(args, data)
-            model = ActorCritic(env, sess, args)
+            model = ActorCritic(env, sess)
 
             try: # training
                 log_steps, log_rewards, log_test_epochs, log_test_rewards = [], [], [], []
                 total_reward = avg_reward = epoch = last_step = 0
                 env.restart(is_train=True)
-                for i in xrange(1, args.train_steps+1):
+                for i in xrange(1, args.max_train_steps+1):
                     if i % 100 == 0:
                         print('total training step: %d' % i)
                     
@@ -547,7 +612,7 @@ def main(args):
                             args.logger.write(
                                 'epoch {:<4} train_step {:<6} test_step {:<6} avg_test_reward {:<10.2f} most_order {:<5} {:<5} most_action {:<5} {:<5}\n'.format(
                                 epoch, i, test_step, avg_test_reward, most_order[0], most_order[1], most_action[0], most_action[1]))
-                            log_test_epochs.append(epoch)
+                            log_test_epochs.append(epoch/args.test_per_n_epochs)
                             log_test_rewards.append(avg_test_reward)
                         # reset the environment
                         env.restart(is_train=True)
@@ -555,8 +620,8 @@ def main(args):
             except KeyboardInterrupt:
                 print('\nManually stop the program !\n')
 
-        actions = sorted(env.seen_actions.iteritems(), key=lambda x:x[1])[:100]
-        orders = sorted(env.target_orders.iteritems(), key=lambda x:x[1])[:100]
+        actions = sorted(env.seen_actions.iteritems(), key=lambda x:x[1], reverse=True)[:100]
+        orders = sorted(env.target_orders.iteritems(), key=lambda x:x[1], reverse=True)[:100]
         args.logger.write('\nsorted target actions and seen actions:\n')
         num = len(actions) if len(actions) <= len(orders) else len(orders)
         for i in range(num):
@@ -574,6 +639,7 @@ def main(args):
 
 
 if __name__ == '__main__':
+    global args
     args = arg_init()
-    main(args)
-    #test_Asyn(args)
+    main()
+    #test_Asyn()

@@ -151,17 +151,17 @@ class Environment(object):
         # get store-specific features
         count_less_than_dates = 0
         for store_id in self.wh_item_data:
-            if len(self.wh_item_data[store_id]) < self.min_dates:
-                count_less_than_dates += 1
-                continue
-            if cur_date in self.wh_item_data[store_id]:
-                x_i_j = self.wh_item_data[store_id][cur_date]
-            # pad zero sales, inventory, stock and return values for missing dates
-            elif self.use_padding:
-                x_i_j = [0, 0, 0, 0]
-            else:
-                continue
             try:
+                if len(self.wh_item_data[store_id]) < self.min_dates:
+                    count_less_than_dates += 1
+                    continue
+                if cur_date in self.wh_item_data[store_id]:
+                    x_i_j = self.wh_item_data[store_id][cur_date]
+                # pad zero sales, inventory, stock and return values for missing dates
+                elif self.use_padding:
+                    x_i_j = [0, 0, 0, 0]
+                else:
+                    continue
                 deliver_time = self.dc2num[self.stores[store_id][1]]
             except Exception as e:
                 #print(e)
@@ -173,14 +173,17 @@ class Environment(object):
             x_i_j.extend(date_emb)
             x_i_j.extend(promotion)
             #ipdb.set_trace()
-            state[valid_count][:len(x_i_j)] = x_i_j
+            if len(x_i_j) > self.emb_dim:
+                state[valid_count] = x_i_j[:self.emb_dim]
+            else:
+                state[valid_count][:len(x_i_j)] = x_i_j
             valid_count += 1
             if valid_count >= self.n_stores:
                 break
         #ipdb.set_trace()
-        if cur_date == self.start_date and is_train:
-            print('wh {} item {} < {} dates: {}/{} stores\n'.format(
-                self.warehouse_id, self.item_id, self.min_dates, count_less_than_dates, len(self.wh_item_data)))
+        # if cur_date == self.start_date and is_train:
+        #     print('wh {} item {} < {} dates: {}/{} stores\n'.format(
+        #         self.warehouse_id, self.item_id, self.min_dates, count_less_than_dates, len(self.wh_item_data)))
         return state, pred_time, valid_count
 
 
@@ -218,7 +221,7 @@ class Environment(object):
         
         # r = f(sales, stocks, returns, inventory)
         #reward = 100 - 10*np.sqrt(np.abs(target_order - action))
-        reward = -self.clip_reward(np.abs(target_order - action), 500)
+        reward = -self.clip_reward(np.abs(target_order - action), 1000)
         # if target_order - action >= 0:
         #     reward = -100 * np.log(target_order - action + 1)
         # else:
