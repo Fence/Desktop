@@ -71,17 +71,19 @@ class ActorCritic(object):
 
 
     def build_actor_network(self, name='actor'):
-        state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
-        if self.conv_layers > 1:
-            inputs = state_input
-            for i in xrange(self.conv_layers):
-                conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
-                mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
-                inputs = mp
-        else:
-            conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
-            mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
-        flat = Flatten()(mp)
+        #state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
+        state_input = Input(shape=(self.emb_dim, ))
+        # if self.conv_layers > 1:
+        #     inputs = state_input
+        #     for i in xrange(self.conv_layers):
+        #         conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
+        #         mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
+        #         inputs = mp
+        # else:
+        #     conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
+        #     mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
+        # flat = Flatten()(mp)
+        flat = Dense(self.dense_dim/2, activation='relu')(state_input)
         state_h1 = Dense(self.dense_dim, activation='relu')(flat)
         output = Dense(1)(state_h1)
 
@@ -93,17 +95,19 @@ class ActorCritic(object):
 
 
     def build_critic_network(self, name='critic'):
-        state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
-        if self.conv_layers > 1:
-            inputs = state_input
-            for i in xrange(self.conv_layers):
-                conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
-                mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
-                inputs = mp
-        else:
-            conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
-            mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
-        flat = Flatten()(mp)
+        #state_input = Input(shape=[self.n_stores, self.emb_dim, 1])
+        state_input = Input(shape=(self.emb_dim, ))
+        # if self.conv_layers > 1:
+        #     inputs = state_input
+        #     for i in xrange(self.conv_layers):
+        #         conv = Conv2D(32, (3, 3), strides=(1, 1), padding='valid', activation='relu')(inputs)
+        #         mp = MaxPooling2D((10, 1), strides=(10, 1), padding='valid')(conv)
+        #         inputs = mp
+        # else:
+        #     conv = Conv2D(32, (5, 5), strides=(2, 2), padding='valid', activation='relu')(state_input)
+        #     mp = MaxPooling2D((self.maxp_dim, 1), strides=(self.maxp_dim, 1), padding='valid')(conv)
+        # flat = Flatten()(mp)
+        flat = Dense(self.dense_dim/2, activation='relu')(state_input)
         state_h1 = Dense(self.dense_dim, activation='relu')(flat)
         state_h2 = Dense(1, activation='relu')(state_h1)
 
@@ -207,16 +211,19 @@ class ActorCritic(object):
                 action = np.random.randn(1)[0]*self.max_random_action + self.max_random_action
                 if action > 0:
                     return int(action)
-        return int(self.actor_model.predict(cur_state)[0][0])
+        #ipdb.set_trace()
+        predicted_action = self.actor_model.predict(np.reshape(cur_state, [1, -1]))
+        return int(predicted_action[0][0])#int(self.actor_model.predict(cur_state)[0][0])
 
 
     def move(self, is_train):
         cur_state = self.env.get_state()
-        tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
+        #tmp_state = np.reshape(cur_state, [1, cur_state.shape[0], cur_state.shape[1], 1])
+        tmp_state = cur_state
         action = self.act(tmp_state)
         new_state, reward, terminal = self.env.step(action, is_train)
-        cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
-        new_state = np.reshape(new_state, [new_state.shape[0], new_state.shape[1], 1])
+        #cur_state = np.reshape(cur_state, [cur_state.shape[0], cur_state.shape[1], 1])
+        #new_state = np.reshape(new_state, [new_state.shape[0], new_state.shape[1], 1])
         return cur_state, action, reward, new_state, terminal
 
     @timeit
@@ -531,11 +538,11 @@ def arg_init():
     parser.add_argument('-test_start_date',   type=str, default='2018-01-01')
     parser.add_argument('-test_end_date',     type=str, default='2018-03-31')
     parser.add_argument('-min_dates',         type=int, default=100)
-    parser.add_argument('-min_stores',        type=int, default=10)
+    parser.add_argument('-min_stores',        type=int, default=0)
     parser.add_argument('-use_padding',       type=int, default=1)
-    parser.add_argument('-random',            type=int, default=1)
+    parser.add_argument('-random',            type=int, default=0)
     # network arguments
-    parser.add_argument('-emb_dim',           type=int, default=73)
+    parser.add_argument('-emb_dim',           type=int, default=83)
     parser.add_argument('-n_stores',          type=int, default=500)
     parser.add_argument('-conv_layers',       type=int, default=1)
     parser.add_argument('-dense_dim',         type=int, default=64)
@@ -552,16 +559,17 @@ def arg_init():
     # main arguments
     parser.add_argument('-n_jobs',            type=int, default=4)
     parser.add_argument('-target_steps',      type=int, default=100)
-    parser.add_argument('-test_epochs',       type=int, default=50)
-    parser.add_argument('-test_per_n_epochs', type=int, default=2)
+    parser.add_argument('-test_epochs',       type=int, default=20)
+    parser.add_argument('-test_per_n_epochs', type=int, default=3)
     parser.add_argument('-train_step',        type=int, default=0)
     parser.add_argument('-max_train_steps',   type=int, default=1000000)
-    parser.add_argument('-result_dir',        type=str, default='results/bs64_ly1_ms10_ns500_random1_test50_tep2_pad1_abs_reward')
-    parser.add_argument('-gpu_rate',          type=float, default=0.25)
+    parser.add_argument('-result_dir',        type=str, default='results/dim83_padding1_random0_dense3_add_features_ms0')
+    parser.add_argument('-gpu_rate',          type=float, default=0.1)
     return parser.parse_args()
 
 
 def main():
+    args.count_items_of_missing_day = 0
     gpu_options = tf.GPUOptions(per_process_gpu_memory_fraction=args.gpu_rate)
     with open('%s.txt'%args.result_dir,'w') as args.logger:
         for (k,v) in sorted(args.__dict__.iteritems(), key=lambda x:x[0]):
@@ -580,7 +588,7 @@ def main():
                 total_reward = avg_reward = epoch = last_step = 0
                 env.restart(is_train=True)
                 for i in xrange(1, args.max_train_steps+1):
-                    if i % 100 == 0:
+                    if i % 365 == 0:
                         print('total training step: %d' % i)
                     
                     cur_state, action, reward, new_state, terminal = model.move(is_train=True)
@@ -596,6 +604,7 @@ def main():
                         log_rewards.append(avg_reward)
                     
                     if terminal:
+                        print('count_items_of_missing_day： %d' % args.count_items_of_missing_day)
                         steps = i - last_step
                         last_step = i
                         epoch += 1
@@ -612,7 +621,7 @@ def main():
                             args.logger.write(
                                 'epoch {:<4} train_step {:<6} test_step {:<6} avg_test_reward {:<10.2f} most_order {:<5} {:<5} most_action {:<5} {:<5}\n'.format(
                                 epoch, i, test_step, avg_test_reward, most_order[0], most_order[1], most_action[0], most_action[1]))
-                            log_test_epochs.append(epoch/args.test_per_n_epochs)
+                            log_test_epochs.append(epoch)
                             log_test_rewards.append(avg_test_reward)
                         # reset the environment
                         env.restart(is_train=True)

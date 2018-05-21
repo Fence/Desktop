@@ -12,6 +12,7 @@ class Environment(object):
     """docstring for Environment"""
     def __init__(self, args, data):
         #self.data = DateProcessing()
+        self.args = args
         self.items = data.items
         self.stores = data.stores
         self.promotions = data.promotions
@@ -20,7 +21,7 @@ class Environment(object):
         self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
         self.wh_item_time = data.warehouse_item_transtime
         self.wh_ind = self.item_ind = 0
-        self.dc2num = data.int2onehot(data.dc2int, 5)
+        self.dc2num = data.int2onehot(data.dc2int, 1) # deliver time
         self.city2num = data.int2onehot(data.city2int, 6)
         self.promo2num = data.int2onehot(data.promo2int, 7)
         self.use_padding = args.use_padding
@@ -44,6 +45,8 @@ class Environment(object):
         status = -1
         while status < 0:
             status = self._restart(self.random, is_train)
+            if status < 0:
+                self.args.count_items_of_missing_day += 1
 
 
     def _restart(self, random, is_train):
@@ -125,7 +128,7 @@ class Environment(object):
         sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, transp_time: 1,
         season: 4, month: 12,    day: 31,  weekday: 7, promotion: 8+1,  weather: 7     city: 21
         """
-        state = np.zeros([self.n_stores, self.emb_dim], dtype=np.float32)
+        #state = np.zeros([self.n_stores, self.emb_dim], dtype=np.float32)
         valid_count = 0
 
         date_emb, weekday = self.date_transformation(cur_date)
@@ -150,41 +153,57 @@ class Environment(object):
                     break
         # get store-specific features
         count_less_than_dates = 0
+        state, x_i_j, deliver_time = [], np.zeros(4), np.zeros(4)
         for store_id in self.wh_item_data:
-            try:
-                if len(self.wh_item_data[store_id]) < self.min_dates:
-                    count_less_than_dates += 1
-                    continue
-                if cur_date in self.wh_item_data[store_id]:
-                    x_i_j = self.wh_item_data[store_id][cur_date]
-                # pad zero sales, inventory, stock and return values for missing dates
-                elif self.use_padding:
-                    x_i_j = [0, 0, 0, 0]
-                else:
-                    continue
-                deliver_time = self.dc2num[self.stores[store_id][1]]
-            except Exception as e:
-                #print(e)
-                continue
-            # no city and no weather
-            x_i_j.extend(deliver_time)
-            x_i_j.append(self.valid_days)
-            x_i_j.append(self.transp_time)
-            x_i_j.extend(date_emb)
-            x_i_j.extend(promotion)
-            #ipdb.set_trace()
-            if len(x_i_j) > self.emb_dim:
-                state[valid_count] = x_i_j[:self.emb_dim]
+            # skip items that ares saled less than min_days
+            # if len(self.wh_item_data[store_id]) < self.min_dates:
+            #     count_less_than_dates += 1
+            #     continue
+            if cur_date in self.wh_item_data[store_id]:
+                x_i_j += np.array(self.wh_item_data[store_id][cur_date])
+                valid_count += 1
+            # pad zero sales, inventory, stock and return values for missing dates
+            elif self.use_padding:
+                x_i_j += [0, 0, 0, 0]
+                valid_count += 1
             else:
-                state[valid_count][:len(x_i_j)] = x_i_j
-            valid_count += 1
-            if valid_count >= self.n_stores:
-                break
+                pass
+                #continue
+            if self.stores[store_id][1] in self.dc2num:
+                deliver_time += self.dc2num[self.stores[store_id][1]]
+            # else:
+            #     continue
+            # no city and no weather
+            # x_i_j.extend(deliver_time)
+            # x_i_j.append(self.valid_days)
+            # x_i_j.append(self.transp_time)
+            # x_i_j.extend(date_emb)
+            # x_i_j.extend(promotion)
+            # #ipdb.set_trace()
+            # if len(x_i_j) > self.emb_dim:
+            #     state[valid_count] = x_i_j[:self.emb_dim]
+            # else:
+            #     state[valid_count][:len(x_i_j)] = x_i_j
+            # valid_count += 1
+            # if valid_count >= self.n_stores:
+            #     break
         #ipdb.set_trace()
         # if cur_date == self.start_date and is_train:
         #     print('wh {} item {} < {} dates: {}/{} stores\n'.format(
         #         self.warehouse_id, self.item_id, self.min_dates, count_less_than_dates, len(self.wh_item_data)))
-        return state, pred_time, valid_count
+        tmp_count, tmp_day, tmp_trans = np.zeros(4), np.zeros(4), np.zeros(4)
+        tmp_count.fill(valid_count)
+        tmp_day.fill(self.valid_days)
+        tmp_trans.fill(self.transp_time)
+        state.extend(tmp_count)    # dim = 4
+        state.extend(tmp_day)      # dim = 4
+        state.extend(tmp_trans)    # dim = 4
+        state.extend(x_i_j)        # dim = 4
+        state.extend(deliver_time) # dim = 4
+        state.extend(date_emb)     # dim = 4 + 12 + 31 + 7 = 54
+        state.extend(promotion)    # dim = 8 + 1 = 9
+        #print(self.item_id, self.warehouse_id, deliver_time, x_i_j, valid_count)
+        return np.array(state), pred_time, valid_count
 
 
     def step(self, action, is_train):
