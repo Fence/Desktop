@@ -85,7 +85,10 @@ class ActorCritic(object):
         # flat = Flatten()(mp)
         flat = Dense(self.dense_dim/2, activation='relu')(state_input)
         state_h1 = Dense(self.dense_dim, activation='relu')(flat)
-        output = Dense(1)(state_h1)
+        if args.activation != 'None':
+            output = Dense(1, activation=args.activation)(state_h1)
+        else:
+            output = Dense(1)(state_h1)
 
         model = Model(inputs=state_input, outputs=output)
         adam = Adam(lr=0.001)
@@ -115,7 +118,10 @@ class ActorCritic(object):
         action_h1 = Dense(1, activation='relu')(action_input)
 
         merged = Add()([state_h2, action_h1])
-        output = Dense(1)(merged)
+        if args.activation != 'None':
+            output = Dense(1, activation=args.activation)(merged)
+        else:
+            output = Dense(1)(merged)
         model = Model(inputs=[state_input, action_input], outputs=output)
 
         adam = Adam(lr=0.001)
@@ -540,31 +546,32 @@ def arg_init():
     parser.add_argument('-min_dates',         type=int, default=100)
     parser.add_argument('-min_stores',        type=int, default=0)
     parser.add_argument('-use_padding',       type=int, default=1)
-    parser.add_argument('-random',            type=int, default=0)
+    parser.add_argument('-random',            type=int, default=1)
     # network arguments
     parser.add_argument('-emb_dim',           type=int, default=83)
     parser.add_argument('-n_stores',          type=int, default=500)
     parser.add_argument('-conv_layers',       type=int, default=1)
     parser.add_argument('-dense_dim',         type=int, default=64)
     parser.add_argument('-maxp_dim',          type=int, default=50)
-    parser.add_argument('-batch_size',        type=int, default=32)
+    parser.add_argument('-batch_size',        type=int, default=128)
+    parser.add_argument('-activation',        type=str, default='relu')
     # agent arguments
     parser.add_argument('-gamma',             type=float, default=0.95)
     parser.add_argument('-epsilon_start',     type=float, default=1.0)
     parser.add_argument('-epsilon_end',       type=float, default=0.1)
     parser.add_argument('-epsilon_decay',     type=float, default=0.9975)
     parser.add_argument('-learning_rate',     type=float, default=0.0025)
-    parser.add_argument('-mem_size',          type=int, default=5000)
+    parser.add_argument('-mem_size',          type=int, default=50000)
     parser.add_argument('-max_random_action', type=int, default=70)
     # main arguments
     parser.add_argument('-n_jobs',            type=int, default=4)
     parser.add_argument('-target_steps',      type=int, default=100)
-    parser.add_argument('-test_epochs',       type=int, default=20)
-    parser.add_argument('-test_per_n_epochs', type=int, default=3)
+    parser.add_argument('-test_epochs',       type=int, default=50)
+    parser.add_argument('-test_per_n_epochs', type=int, default=20)
     parser.add_argument('-train_step',        type=int, default=0)
-    parser.add_argument('-max_train_steps',   type=int, default=1000000)
-    parser.add_argument('-result_dir',        type=str, default='results/dim83_padding1_random0_dense3_add_features_ms0')
-    parser.add_argument('-gpu_rate',          type=float, default=0.1)
+    parser.add_argument('-max_train_steps',   type=int, default=10000000)
+    parser.add_argument('-result_dir',        type=str, default='results/op_relu_sales_reward_bs128_test50_20_dim83_padding1_random1_dense3_add_features_ms0')
+    parser.add_argument('-gpu_rate',          type=float, default=0.2)
     return parser.parse_args()
 
 

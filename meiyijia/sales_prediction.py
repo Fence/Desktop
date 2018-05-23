@@ -6,14 +6,16 @@ import argparse
 import numpy as np
 import lightgbm as lgb
 import xgboost as xgb
+from tqdm import tqdm 
 from lightgbm.sklearn import LGBMRegressor
 from xgboost.sklearn import XGBRegressor
 from sklearn import cross_validation, metrics   #Additional     scklearn functions
 from sklearn.grid_search import GridSearchCV   #Perforing grid search
 from sklearn.metrics import make_scorer
 
-from data_processor import DateProcessing
-
+from data_processor import DateProcessing, timeit
+from environment import Environment
+        
 
 #definitions of some transformation rules  
 def ToWeight(y):  
@@ -27,7 +29,6 @@ def rmspe(yhat, y):
     rmspe = np.sqrt(np.mean( w * (y - yhat)**2 ))  
     return rmspe
 
-  
 def rmspe_xg(yhat, y):  
     # y = y.values  
     y = y.get_label()  
@@ -37,31 +38,62 @@ def rmspe_xg(yhat, y):
     rmspe = np.sqrt(np.mean(w * (y - yhat)**2))  
     return "rmspe", rmspe 
 
-
 def my_custom_loss_func(ground_truth, predictions):
     return np.sqrt(np.mean( (predictions/ground_truth - 1)**2 ))
     #return rmspe(predictions, ground_truth)
 
 def get_data(args):
     data = DateProcessing()
-    print('Preparing data ...')
-    start = time.time()
-    data.DAT2Matrix(args)
-    end = time.time()
-    print('Training data processed, time: {:.2f}s\n'.format(end - start))
-    ipdb.set_trace()
-    test_num = int(len(data.x_all) * 0.2)  
-    if test_num > 100000:
-        test_num = 100000
-    num = len(data.x_all) - test_num
-    x_train = data.x_all[: num]
-    x_valid = data.x_all[num: ]
-    y_train = data.y_all[: num]
-    y_valid = data.y_all[num: ]
-    return x_train, y_train, x_valid, y_valid
+    values = data.data2matrix(args)
+    values = [np.array(v) for v in values]
+    print([v.shape for v in values])
+    [x_train, y_train, x_valid, y_valid, x_test, y_test] = values
+    # print('Preparing data ...')
+    # start = time.time()
+    # data.DAT2Matrix(args)
+    # end = time.time()
+    # print('Training data processed, time: {:.2f}s\n'.format(end - start))
+    # ipdb.set_trace()
+    # test_num = int(len(data.x_all) * 0.2)  
+    # if test_num > 100000:
+    #     test_num = 100000
+    # num = len(data.x_all) - test_num
+    # x_train = [] #data.x_all[: num]
+    # x_valid = [] #data.x_all[num: ]
+    # x_test  = []
+    # y_train = [] #data.y_all[: num]
+    # y_valid = [] #data.y_all[num: ]
+    # y_test  = []
+    # ipdb.set_trace()
+    # env = Environment(args, data)
+    # env.restart(is_train=True)
+    # for i in tqdm(xrange(args.max_data)):
+    #     state = env.get_state()
+    #     target = env.get_target()
+    #     if i%10 == 0:
+    #         x_valid.append(state)
+    #         y_valid.append(target)
+    #     else:
+    #         x_train.append(state)
+    #         y_train.append(target)
+    #     terminal = env.boosting_step(is_train=True)
+    #     if terminal:
+    #         args.count_train_items += 1
+
+    # env.restart(is_train=False)
+    # for i in tqdm(xrange(100000)):
+    #     state = env.get_state()
+    #     target = env.get_target()
+    #     x_test.append(state)
+    #     y_test.append(target)
+    #     terminal = env.boosting_step(is_train=False)
+    #     if terminal:
+    #         args.count_test_items += 1
+
+    return x_train, y_train, x_valid, y_valid, x_test, y_test
 
 
-def main(args, x_train, y_train, x_valid, y_valid):
+def main(args, x_train, y_train, x_valid, y_valid, x_test, y_test):
     if args.mode == 'xgb':
         dtrain = xgb.DMatrix(x_train, label=y_train)
         dvalid = xgb.DMatrix(x_valid, label=y_valid)
@@ -82,7 +114,7 @@ def main(args, x_train, y_train, x_valid, y_valid):
         
         print("\nValidating")  
         #ipdb.set_trace()
-        yhat = model.predict(xgb.DMatrix(x_valid), ntree_limit=model.best_ntree_limit)
+        yhat = model.predict(xgb.DMatrix(x_test), ntree_limit=model.best_ntree_limit)
 
     else:
         lgb_train = lgb.Dataset(x_train, y_train)
@@ -105,9 +137,9 @@ def main(args, x_train, y_train, x_valid, y_valid):
                 }
         model = lgb.train(params, lgb_train, args.num_boost_round, valid_sets=lgb_eval,
                     early_stopping_rounds=args.early_stop, verbose_eval=True)
-        yhat = model.predict(x_valid, num_iteration=model.best_iteration)
+        yhat = model.predict(x_test, num_iteration=model.best_iteration)
 
-    error = rmspe(yhat, y_valid)  
+    error = rmspe(yhat, y_test)  
     print('RMSPE: {:.6f}\n'.format(error))
     for k,v in params.items():
         args.outfiler.write('{}: {}\n'.format(k, v))
@@ -118,9 +150,9 @@ def main(args, x_train, y_train, x_valid, y_valid):
 def searching(args, x_train, y_train, x_valid, y_valid):
     param_test = {
         'learning_rate': [0.05, 0.1, 0.25, 0.5],
-        #'n_estimators': list(range(50, 500, 50)),
-        #'max_depth': list(range(3,10,2)),
-        #'min_child_weight': list(range(1,6,2)),
+        #'n_estimators': list(xrange(50, 500, 50)),
+        #'max_depth': list(xrange(3,10,2)),
+        #'min_child_weight': list(xrange(1,6,2)),
     }
     if self.grid_search == 1:
         loss = make_scorer(my_custom_loss_func, greater_is_better=False)
@@ -177,7 +209,7 @@ def searching(args, x_train, y_train, x_valid, y_valid):
         print('rmspe: {}\n'.format(error))
         args.outfiler.write('rmspe: {}\n'.format(error))
     else:
-        for ne in range(10, 300, 20):
+        for ne in xrange(10, 300, 20):
             xlf = XGBRegressor( max_depth=10, 
                                 learning_rate=0.05, 
                                 n_estimators=ne,
@@ -206,44 +238,56 @@ def searching(args, x_train, y_train, x_valid, y_valid):
 if __name__ == '__main__':
     start = time.time()
     parser = argparse.ArgumentParser()
-    parser.add_argument("--func", type=str, default='main', help='')
-    parser.add_argument("--mode", type=str, default='lgb', help='')
-    parser.add_argument("--save_data", type=bool, default=False, help='')
-    parser.add_argument("--avg_hist", type=bool, default=False, help='')
-    parser.add_argument("--grid_search", type=int, default=0, help='')
-    parser.add_argument("--num_boost_round", type=int, default=500, help='')
-    parser.add_argument("--early_stop", type=int, default=20, help='')
-    parser.add_argument("--max_depth", type=int, default=10, help='')
-    parser.add_argument("--min_child_weight", type=int, default=5, help='')
-    parser.add_argument("--num_leaves", type=int, default=31, help='')
-    parser.add_argument("--max_data", type=int, default=1000000, help='')
-    parser.add_argument("--learning_rate", type=float, default=0.05, help='')
-    parser.add_argument("--subsample", type=float, default=0.9, help='')
-    parser.add_argument("--result_dir", type=str, default='reg_md_mcw_ft30_lgb_100w_ss', help='')
+    # environment
+    parser.add_argument('-train_start_date',            type=str, default='2017-01-01')
+    parser.add_argument('-train_end_date',              type=str, default='2017-12-31')
+    parser.add_argument('-test_start_date',             type=str, default='2018-01-01')
+    parser.add_argument('-test_end_date',               type=str, default='2018-03-31')
+    parser.add_argument('-count_items_of_missing_day',  type=int, default=0)
+    parser.add_argument('-count_train_items',           type=int, default=0)
+    parser.add_argument('-count_test_items',            type=int, default=0)
+    parser.add_argument('-min_stores',                  type=int, default=0)
+    parser.add_argument('-use_padding',                 type=int, default=0)
+    parser.add_argument('-random',                      type=int, default=0)
+    #
+    parser.add_argument("--func",               type=str, default='main', help='')
+    parser.add_argument("--mode",               type=str, default='lgb', help='')
+    parser.add_argument("--save_data",          type=bool, default=False, help='')
+    parser.add_argument("--avg_hist",           type=bool, default=False, help='')
+    parser.add_argument("--grid_search",        type=int, default=0, help='')
+    parser.add_argument("--num_boost_round",    type=int, default=500, help='')
+    parser.add_argument("--early_stop",         type=int, default=100, help='')
+    parser.add_argument("--max_depth",          type=int, default=10, help='')
+    parser.add_argument("--min_child_weight",   type=int, default=5, help='')
+    parser.add_argument("--num_leaves",         type=int, default=31, help='')
+    parser.add_argument("--max_data",           type=int, default=1000000, help='')
+    parser.add_argument("--learning_rate",      type=float, default=0.05, help='')
+    parser.add_argument("--subsample",          type=float, default=0.9, help='')
+    parser.add_argument("--result_dir",         type=str, default='test_lgb_dim69', help='')
     args = parser.parse_args()
-    x_train, y_train, x_valid, y_valid = get_data(args)
+    x_train, y_train, x_valid, y_valid, x_test, y_test = get_data(args)
     with open('results/%s.txt'%args.result_dir,'w') as args.outfiler:
         for k,v in args.__dict__.items():
             args.outfiler.write('{}: {}\n'.format(k, v))
         args.outfiler.write('\n')
         if args.func == 'main':
             if args.mode == 'lgb':
-                for i in range(5, 9):
-                    for j in range(5, 11):
+                for i in xrange(5, 9):
+                    for j in xrange(5, 11):
                         args.subsample = j*0.1
                         args.num_leaves = 2**i - 1
                         #args.max_depth = i
                         #args.min_child_weight = j
                         #args.learning_rate = 0.05*(i+1)
-                        main(args, x_train, y_train, x_valid, y_valid)
+                        main(args, x_train, y_train, x_valid, y_valid, x_test, y_test)
             else:
-                for i in range(3, 11):
-                    for j in range(1, 6):
+                for i in xrange(3, 11):
+                    for j in xrange(1, 6):
                         #args.subsample = j*0.1
                         args.max_depth = i
                         args.min_child_weight = j
                         #args.learning_rate = 0.05*(i+1)
-                        main(args, x_train, y_train, x_valid, y_valid)
+                        main(args, x_train, y_train, x_valid, y_valid, x_test, y_test)
         else:
             searching(args, x_train, y_train, x_valid, y_valid)
     end = time.time()

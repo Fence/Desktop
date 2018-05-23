@@ -26,9 +26,9 @@ class Environment(object):
         self.promo2num = data.int2onehot(data.promo2int, 7)
         self.use_padding = args.use_padding
         self.min_stores = args.min_stores
-        self.min_dates = args.min_dates
-        self.n_stores = args.n_stores
-        self.emb_dim = args.emb_dim
+        #self.min_dates = args.min_dates
+        #self.n_stores = args.n_stores
+        #self.emb_dim = args.emb_dim
         self.random = args.random
         self.train_start_date = args.train_start_date
         self.test_start_date = args.test_start_date
@@ -128,6 +128,64 @@ class Environment(object):
         sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, transp_time: 1,
         season: 4, month: 12,    day: 31,  weekday: 7, promotion: 8+1,  weather: 7     city: 21
         """
+        valid_count = 0
+        date_emb, weekday = self.date_transformation(cur_date)
+        od = sorted(zip(range(len(self.orderdays)), self.orderdays), key=lambda x:x[1]) # sort by weekday
+        #ipdb.set_trace()
+        for i in xrange(len(od)):
+            if weekday <= od[i][1]:
+                tmp_start = self.arrivedays[od[i][0]] - weekday
+                pred_start = tmp_start if tmp_start >= 0 else tmp_start + 7
+                tmp_end = self.arrivedays[ (od[i][0] + 1) % len(od) ] - self.arrivedays[od[i][0]]
+                pred_end = pred_start + tmp_end if tmp_end >= 0 else pred_start + tmp_end + 7
+                # assert pred_end >= pred_start
+                break
+        pred_time = [pred_start, pred_end]
+        promotion = np.zeros(9) # way, discount
+        if self.item_id in self.promotions:
+            for p in self.promotions[self.item_id]:
+                # if this item is promoted at this day
+                if p[0] <= cur_date <= p[1]: 
+                    promotion[:-1] = self.promo2num[p[-2]]
+                    promotion[-1] = p[-1]
+                    break
+        # get store-specific features
+        count_less_than_dates = 0
+        state, x_i_j, deliver_time = [], np.zeros(4), np.zeros(4)
+        for store_id in self.wh_item_data:
+            if cur_date in self.wh_item_data[store_id]:
+                x_i_j += np.array(self.wh_item_data[store_id][cur_date])
+                valid_count += 1
+            # pad zero sales, inventory, stock and return values for missing dates
+            elif self.use_padding:
+                x_i_j += [0, 0, 0, 0]
+                valid_count += 1
+            else:
+                pass
+                #continue
+            if self.stores[store_id][1] in self.dc2num:
+                deliver_time += self.dc2num[self.stores[store_id][1]]
+        
+        tmp_count, tmp_day, tmp_trans = np.zeros(1), np.zeros(1), np.zeros(1)
+        tmp_count.fill(valid_count)
+        tmp_day.fill(self.valid_days)
+        tmp_trans.fill(self.transp_time)
+        state.extend(tmp_count)    # dim = 1
+        state.extend(tmp_day)      # dim = 1
+        state.extend(tmp_trans)    # dim = 1
+        state.extend(x_i_j)        # dim = 4
+        state.extend(deliver_time) # dim = 4
+        state.extend(date_emb)     # dim = 4 + 12 + 31 + 7 = 54
+        state.extend(promotion)    # dim = 8 + 1 = 9
+        #print(self.item_id, self.warehouse_id, deliver_time, x_i_j, valid_count)
+        return np.array(state), pred_time, valid_count
+
+
+    def generate_state_old(self, cur_date, is_train):
+        """ all features of an item_warehouse state: 73 (no city and no weather)
+        sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, transp_time: 1,
+        season: 4, month: 12,    day: 31,  weekday: 7, promotion: 8+1,  weather: 7     city: 21
+        """
         #state = np.zeros([self.n_stores, self.emb_dim], dtype=np.float32)
         valid_count = 0
 
@@ -206,7 +264,7 @@ class Environment(object):
         return np.array(state), pred_time, valid_count
 
 
-    def step(self, action, is_train):
+    def get_target(self):
         tmp_date = self.update_date(self.cur_date, self.pred_time[0])
         target_sales = target_stocks = target_returns = 0
         #ipdb.set_trace()
@@ -221,7 +279,24 @@ class Environment(object):
                 continue
             tmp_date = self.update_date(tmp_date)
 
-        target_order = target_stocks - target_returns # target_sales
+        target_order = target_sales # target_stocks - target_returns #
+        return target_order
+
+
+    def boosting_step(self, is_train):
+        self.cur_date = self.update_date(self.cur_date)
+        status = self.get_valid_state(is_train) # current state is new state
+        if self.cur_date > self.end_date or status < 0:
+            #ipdb.set_trace()
+            terminal = True # change terminal 1
+            self.restart(is_train) # current state is new state
+        else:
+            terminal = False # change terminal 2
+        return terminal
+
+
+    def step(self, action, is_train):
+        target_order = self.get_target() 
         act = action# % 10
         self.action_count += 1
         if act in self.seen_actions:
