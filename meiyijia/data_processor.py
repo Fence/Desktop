@@ -62,6 +62,23 @@ class DateProcessing(object):
         self.get_transport_time()
 
 
+    def is_holidays(self, date):
+        holidays = [['2016-12-31', '2017-01-02'], # New Year's Day
+                    ['2017-01-27', '2017-02-02'], # Spring Festival
+                    ['2017-04-02', '2017-04-04'], # Qingming Festival
+                    ['2017-04-29', '2017-05-01'], # May Day
+                    ['2017-05-28', '2017-05-30'], # the Dragon Boat Festival
+                    ['2017-10-01', '2017-10-08'], # National Day
+                    ['2017-12-30', '2018-01-01'],
+                    ['2018-02-15', '2018-02-21'],
+                    #['2018-04-05', '2018-04-07']
+                    ]
+        for d in holidays:
+            if d[0] <= date <= d[1]:
+                return True
+        return False
+
+
     def int2onehot(self, data_dict, value=1):
         new_dict = {}
         for k,v in data_dict.iteritems():
@@ -75,6 +92,19 @@ class DateProcessing(object):
         output = np.zeros(dim)
         output[num] = value
         return output
+
+
+    def item2onehot(self, onehot):
+        item2num = {}
+        if onehot:
+            for item_id in self.items:
+                output = np.zeros(len(self.items))
+                output[len(item2num)] = 1
+                item2num[item_id] = output
+        else:
+            for item_id in self.items:
+                item2num[item_id] = [len(item2num)]
+        return item2num
 
 
     @timeit
@@ -198,6 +228,120 @@ class DateProcessing(object):
             print('Successfully save file as data/%s.json\n' % name)                  
 
 
+    def data2matrix_stores(self, args):
+        x_train = [] 
+        x_valid = [] 
+        x_test  = []
+        y_train = [] 
+        y_valid = [] 
+        y_test  = []
+        count_train = count_test = count_zero = 0
+
+        #ipdb.set_trace()
+        print('Loading data ...')
+        self.dc2num = self.int2onehot(self.dc2int, 1) # deliver time
+        self.city2num = self.int2onehot(self.city2int, 1)
+        self.promo2num = self.int2onehot(self.promo2int, 1)
+        self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
+        self.wh_item_store_data = json.load(open('data/datasets.json', 'r'))['wh_item_stores']
+        self.item2num = self.item2onehot(args.onehot)
+        try:
+            for wh_id in self.wh_data:
+                for item_id in self.wh_data[wh_id]:
+                    values = self.get_warehouse_item_features(wh_id, item_id)
+                    if values[0] > args.valid_days[1] or values[0] < args.valid_days[0]:
+                        continue
+                    try:
+                        self.wh_item_data = json.load(open('data/items_data/%s_%s.json'%(wh_id, item_id),'r'))
+                    except:
+                        continue
+                    
+                    self.valid_days, self.orderdays, self.arrivedays, self.transp_time = values
+                    for store_id in self.wh_item_data:
+                        for cur_date in self.wh_item_data[store_id]:
+                            state, pred_time = self.generate_state_stores(cur_date, item_id, store_id)
+                            target = self.get_target_stores(cur_date, pred_time, store_id)
+                            if target < 0:
+                                count_zero += 1
+                                continue
+                            if cur_date < args.test_start_date:
+                                count_train += 1
+                                if count_train % args.valid_split == 0:
+                                    x_valid.append(state)
+                                    y_valid.append(target)
+                                else:
+                                    x_train.append(state)
+                                    y_train.append(target)
+                            else:
+                                count_test += 1
+                                x_test.append(state)
+                                y_test.append(target)
+                            if count_train % 100000 == 0:
+                                print(count_train, count_test)
+                            if count_train >= args.max_data:
+                                assert count_train < args.max_data
+        except AssertionError as e:
+            print(e)
+        print('train: %d test: %d zeros: %d\n'%(count_train, count_test, count_zero))
+        return x_train, y_train, x_valid, y_valid, x_test, y_test
+
+
+    def generate_state_stores(self, cur_date, item_id, store_id):
+        date_emb, weekday = self.date_transformation(cur_date)
+        od = sorted(zip(range(len(self.orderdays)), self.orderdays), key=lambda x:x[1]) # sort by weekday
+        #ipdb.set_trace()
+        for i in xrange(len(od)):
+            if weekday <= od[i][1]:
+                tmp_start = self.arrivedays[od[i][0]] - weekday
+                pred_start = tmp_start if tmp_start >= 0 else tmp_start + 7
+                tmp_end = self.arrivedays[ (od[i][0] + 1) % len(od) ] - self.arrivedays[od[i][0]]
+                pred_end = pred_start + tmp_end if tmp_end >= 0 else pred_start + tmp_end + 7
+                # assert pred_end >= pred_start
+                break
+        pred_time = [pred_start, pred_end]
+        promotion = np.zeros(9) # way, discount
+        if item_id in self.promotions:
+            for p in self.promotions[item_id]:
+                # if this item is promoted at this day
+                if p[0] <= cur_date <= p[1]: 
+                    promotion[:-1] = self.promo2num[p[-2]]
+                    promotion[-1] = p[-1]
+                    break
+        # get store-specific features
+        state = []
+        deliver_time = self.dc2num[self.stores[store_id][1]]
+        x_i_j = self.wh_item_data[store_id][cur_date]
+        state.append(self.valid_days)      # dim = 1
+        state.append(self.transp_time)    # dim = 1
+        state.extend(x_i_j)        # dim = 4
+        state.extend(deliver_time) # dim = 4
+        state.extend(promotion)    # dim = 8 + 1 = 9
+        state.extend(date_emb)     # dim = 4 + 12 + 31 + 7 = 54
+        #print(self.item_id, self.warehouse_id, deliver_time, x_i_j, valid_count)
+        return np.array(state), pred_time#, valid_count
+
+
+    def get_target_stores(self, cur_date, pred_time, store_id):
+        tmp_date = self.update_date(cur_date, pred_time[0])
+        target_sales = target_stocks = target_returns = 0
+        valid_count = 0
+        for d in xrange(pred_time[0], pred_time[1]):
+            try:
+                sales, _, stocks, returns = self.wh_item_data[store_id][tmp_date]
+                target_sales += sales
+                target_stocks += stocks
+                target_returns += returns
+                valid_count += 1
+            except Exception as e: # tmp_date may not be in the keys
+                continue
+            tmp_date = self.update_date(tmp_date)
+
+        if valid_count == 0:
+            return -1
+        target_order = target_sales # target_stocks - target_returns # 
+        return target_order
+
+
     def data2matrix(self, args):
         x_train = [] 
         x_valid = [] 
@@ -205,37 +349,49 @@ class DateProcessing(object):
         y_train = [] 
         y_valid = [] 
         y_test  = []
-        count_train = count_test = 0
+        count_train = count_test = count_zero = 0
 
         #ipdb.set_trace()
+        print('Loading data ...')
         self.dc2num = self.int2onehot(self.dc2int, 1) # deliver time
         self.city2num = self.int2onehot(self.city2int, 1)
         self.promo2num = self.int2onehot(self.promo2int, 1)
         self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
+        self.wh_item_store_data = json.load(open('data/datasets.json', 'r'))['wh_item_stores']
+        self.item2num = self.item2onehot(args.onehot)
+        #self.valid_days_items = {}
         for wh_id in self.wh_data:
             for item_id in self.wh_data[wh_id]:
                 values = self.get_warehouse_item_features(wh_id, item_id)
-                if len(values) == 1:
+                # if values[0] not in self.valid_days_items:
+                #     self.valid_days_items[values[0]] = 1
+                # else:
+                #     self.valid_days_items[values[0]] += 1
+                # continue
+                if values[0] > args.valid_days[1] or values[0] < args.valid_days[0]:
                     continue
-                else:
-                    self.valid_days, self.orderdays, self.arrivedays, self.transp_time = values
-                    for cur_date in self.wh_data[wh_id][item_id]:
-                        state, pred_time = self.generate_state(cur_date, self.wh_data[wh_id][item_id], item_id)
-                        target = self.get_target(cur_date, pred_time, self.wh_data[wh_id][item_id])
-                        if cur_date < args.test_start_date:
-                            count_train += 1
-                            if count_train % 10 == 0:
-                                x_valid.append(state)
-                                y_valid.append(target)
-                            else:
-                                x_train.append(state)
-                                y_train.append(target)
+                self.valid_days, self.orderdays, self.arrivedays, self.transp_time = values
+                for cur_date in self.wh_data[wh_id][item_id]:
+                    state, pred_time = self.generate_state(cur_date, wh_id, item_id)
+                    target = self.get_target(cur_date, pred_time, wh_id, item_id)
+                    if target < 0:
+                        count_zero += 1
+                        continue
+                    if cur_date < args.test_start_date:
+                        count_train += 1
+                        if count_train % args.valid_split == 0:
+                            x_valid.append(state)
+                            y_valid.append(target)
                         else:
-                            count_test += 1
-                            x_test.append(state)
-                            y_test.append(target)
-                        # if count_train % 100000 == 0:
-                        #     print(count_train, count_test)
+                            x_train.append(state)
+                            y_train.append(target)
+                    else:
+                        count_test += 1
+                        x_test.append(state)
+                        y_test.append(target)
+                    # if count_train % 10000 == 0:
+                    #     print(count_train, count_test)
+        print('train: %d test: %d zeros: %d\n'%(count_train, count_test, count_zero))
         return x_train, y_train, x_valid, y_valid, x_test, y_test
 
 
@@ -259,12 +415,12 @@ class DateProcessing(object):
         return valid_days, orderdays, arrivedays, transp_time
 
 
-    def generate_state(self, cur_date, wh_item_data, item_id):
+    def generate_state(self, cur_date, wh_id, item_id):
         """ all features of an item_warehouse state: 73 (no city and no weather)
         sales: 1,  inventory: 1, stock: 1, return: 1,  deliver_time: 4, valid_days: 1, transp_time: 1,
         season: 4, month: 12,    day: 31,  weekday: 7, promotion: 8+1,  weather: 7     city: 21
         """
-        valid_count = 0
+        #valid_count = 0
         date_emb, weekday = self.date_transformation(cur_date)
         od = sorted(zip(range(len(self.orderdays)), self.orderdays), key=lambda x:x[1]) # sort by weekday
         #ipdb.set_trace()
@@ -288,9 +444,10 @@ class DateProcessing(object):
         # get store-specific features
         #count_less_than_dates = 0
         state, x_i_j, deliver_time = [], np.zeros(4), np.zeros(4)
-        # for store_id in self.wh_item_data:
-        #     if cur_date in self.wh_item_data[store_id]:
-        #         x_i_j += np.array(self.wh_item_data[store_id][cur_date])
+        valid_count = len(self.wh_item_store_data[wh_id][item_id])
+        # for store_id in wh_item_store_data:
+        #     if cur_date in wh_item_store_data[store_id]:
+        #         x_i_j += np.array(wh_item_store_data[store_id][cur_date])
         #         valid_count += 1
         #     # pad zero sales, inventory, stock and return values for missing dates
         #     elif self.use_padding:
@@ -299,40 +456,45 @@ class DateProcessing(object):
         #     else:
         #         pass
         #         #continue
-        #     if self.stores[store_id][1] in self.dc2num:
-        #         deliver_time += self.dc2num[self.stores[store_id][1]]
-        x_i_j = wh_item_data[cur_date]
+            # if self.stores[store_id][1] in self.dc2num:
+            #     deliver_time += self.dc2num[self.stores[store_id][1]]
+        x_i_j = self.wh_data[wh_id][item_id][cur_date]
         tmp_count, tmp_day, tmp_trans = np.zeros(1), np.zeros(1), np.zeros(1)
-        #tmp_count.fill(valid_count)
+        tmp_count.fill(valid_count)
         tmp_day.fill(self.valid_days)
         tmp_trans.fill(self.transp_time)
-        #state.extend(tmp_count)    # dim = 1
+        state.extend(tmp_count)    # dim = 1
         state.extend(tmp_day)      # dim = 1
         state.extend(tmp_trans)    # dim = 1
         state.extend(x_i_j)        # dim = 4
         #state.extend(deliver_time) # dim = 4
-        state.extend(date_emb)     # dim = 4 + 12 + 31 + 7 = 54
         state.extend(promotion)    # dim = 8 + 1 = 9
+        state.extend(date_emb)     # dim = 4 + 12 + 31 + 7 = 54
+        state.extend(self.item2num[item_id])
         #print(self.item_id, self.warehouse_id, deliver_time, x_i_j, valid_count)
         return np.array(state), pred_time#, valid_count
 
 
-    def get_target(self, cur_date, pred_time, wh_item_data):
+    def get_target(self, cur_date, pred_time, wh_id, item_id):
         tmp_date = self.update_date(cur_date, pred_time[0])
         target_sales = target_stocks = target_returns = 0
-        #ipdb.set_trace()
+        valid_count = 0
         for d in xrange(pred_time[0], pred_time[1]):
             try:
-                sales, _, stocks, returns = wh_item_data[tmp_date]
+                sales, _, stocks, returns = self.wh_data[wh_id][item_id][tmp_date]
                 target_sales += sales
                 target_stocks += stocks
                 target_returns += returns
+                valid_count += 1
             except Exception as e: # tmp_date may not be in the keys
                 #ipdb.set_trace()
                 continue
             tmp_date = self.update_date(tmp_date)
 
-        target_order = target_stocks - target_returns # target_sales # 
+        if valid_count == 0:
+            return -1
+
+        target_order = target_sales # target_stocks - target_returns # 
         return target_order
 
 

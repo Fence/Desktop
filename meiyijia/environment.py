@@ -5,7 +5,7 @@ import argparse
 import numpy as np
 import datetime as dt
 from datetime import datetime as dtdt
-from data_processor import DateProcessing
+from data_processor import DateProcessing, timeit
 
 
 class Environment(object):
@@ -357,17 +357,20 @@ class Environment(object):
     def get_state(self):
         return self.state
 
-
+    @timeit
     def compute_dataset_features(self):
         count = 0 # count = 575
         item_stores = {} # 1~99: 341;      100~999: 79;       >=1000: 316
         store_dates = {} # 1~99: 996,423 (80%);  100~199: 179,158 (14%);  >= 200: 76,647 (6%)
         # all: 1,252,228;  1~33: 640,306 (51%);  34 ~ 66: 229,821 (18%);  67 ~99: 126,296 (10%)
+        wh_item_stores = {}
         print('Loading data and computing ...')
         for w, items in self.wh_item.iteritems():
+            wh_item_stores[w] = {}
             for i in items:
                 try:
                     d = json.load(open('data/items_data/%s_%s.json'%(w, i)))
+                    wh_item_stores[w][i] = d.keys()
                     if len(d) not in item_stores:
                         item_stores[len(d)] = 1
                     else:
@@ -386,8 +389,9 @@ class Environment(object):
             print('Saving data ...')
             data = {'count': count,
                     'item_stores': item_stores,
-                    'store_dates': store_dates}
-            json.dump(data, f, indent=2)
+                    'store_dates': store_dates,
+                    'wh_item_stores': wh_item_stores}
+            json.dump(data, f, indent=4)
             print('Finish!')
 
 
@@ -454,17 +458,22 @@ def test():
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('-emb_dim', type=int, default=73)
-    parser.add_argument('-n_stores', type=int, default=2000)
-    parser.add_argument('-min_dates', type=int, default=30)
-    parser.add_argument('-min_stores', type=int, default=100)
-    parser.add_argument('-random', type=bool, default=False)
+    parser.add_argument('-train_start_date',            type=str, default='2017-01-01')
+    parser.add_argument('-train_end_date',              type=str, default='2017-12-31')
+    parser.add_argument('-test_start_date',             type=str, default='2018-01-01')
+    parser.add_argument('-test_end_date',               type=str, default='2018-03-31')
+    parser.add_argument('-count_items_of_missing_day',  type=int, default=0)
+    parser.add_argument('-count_train_items',           type=int, default=0)
+    parser.add_argument('-count_test_items',            type=int, default=0)
+    parser.add_argument('-min_stores',                  type=int, default=0)
+    parser.add_argument('-use_padding',                 type=int, default=0)
+    parser.add_argument('-random',                      type=int, default=0)
     args = parser.parse_args()
     data = DateProcessing()
     env = Environment(args, data)
-    ipdb.set_trace()
-    env.padding_missing_data()
+    # ipdb.set_trace()
+    # env.padding_missing_data()
     # env.test_multi_threads(4)
-    # env.compute_dataset_features()
+    env.compute_dataset_features()
     # for i in xrange(400):
     #     env.test_act()
