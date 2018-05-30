@@ -11,6 +11,7 @@ from tqdm import tqdm
 from datetime import datetime as dtdt
 
 def timeit(f):
+    # 记录某个函数运行所耗费的时间
     def timed(*args, **kwargs):
         start_time = time.time()
         result = f(*args, **kwargs)
@@ -21,7 +22,7 @@ def timeit(f):
     return timed
 
 class DateProcessing(object):
-    """docstring for DateProcessing"""
+    """数据处理模块"""
     def __init__(self):
         import sys
         reload(sys)
@@ -54,6 +55,7 @@ class DateProcessing(object):
         self.warehouse_item = {}
         #self.warehouse_item_sales_volume = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
 
+        # 根据xlsx表格中的6个sheet，依次处理
         self.get_stores()
         self.get_items()
         self.get_suppliers()
@@ -64,6 +66,7 @@ class DateProcessing(object):
 
 
     def is_holidays(self, date):
+        # 判断一个日期是不是假期
         holidays = [['2016-12-31', '2017-01-02'], # New Year's Day
                     ['2017-01-27', '2017-02-02'], # Spring Festival
                     ['2017-04-02', '2017-04-04'], # Qingming Festival
@@ -81,6 +84,7 @@ class DateProcessing(object):
 
 
     def int2onehot(self, data_dict, value=1):
+        # 将int的字典转换成对应的one-hot编码的字典
         new_dict = {'UNK': np.zeros(len(data_dict), dtype=np.int32)}
         for k,v in data_dict.iteritems():
             one_hot = np.zeros(len(data_dict), dtype=np.int32)
@@ -90,12 +94,14 @@ class DateProcessing(object):
 
 
     def onehot_coding(self, num, dim, value=1):
+        # one-hot编码
         output = np.zeros(dim)
         output[num] = value
         return output
 
 
     def save_file(self, data, name='save_file'):
+        # 保存json文件
         with open('data/%s.json' % name, 'w') as f:
             print('Saving file ...')     
             json.dump(data, f, indent=2)
@@ -103,6 +109,7 @@ class DateProcessing(object):
 
 
     def date_transformation(self, date, onehot=False):
+        # 转换日期，获得日期编码，包括假日，周末，季节，月份，天，工作日
         # 1~7 denote Monday~Sunday
         # 1~4 denote Spring~Winter
         [year, month, day] = [int(i) for i in date.split('-')]
@@ -132,6 +139,7 @@ class DateProcessing(object):
 
 
     def promotion_coding(self, cur_date, item_id, onehot=False):
+        # 获取促销信息，包括促销方式p[-2]和折扣率p[-1]
         if onehot:
             promotion = np.zeros(9) # way, discount
             promotion.fill(-1)
@@ -157,6 +165,7 @@ class DateProcessing(object):
 
 
     def item_store_city_coding(self, item_id, store_id, onehot=False):
+        # 获取商品，商店，城市的编码
         item_id = item_id if item_id in self.item2int else 'UNK'
         store_id = store_id if store_id in self.store2int else 'UNK'
         if onehot:
@@ -170,7 +179,8 @@ class DateProcessing(object):
         return item_coding, store_coding, city_coding
 
 
-    def deliver_city_weather_coding(self, cur_date, store_id, onehot=False):
+    def deliver_weather_coding(self, cur_date, store_id, onehot=False):
+        # 获取配送周期和天气的编码
         tmp_date = cur_date.replace('-','')
         city = self.stores[store_id][0] if store_id in self.stores else -1
         weather = None
@@ -192,19 +202,22 @@ class DateProcessing(object):
         
 
     def data2matrix_by_store(self, args):
+        # 以商店为单位，将数据数值化
         x_train, x_valid, x_test, y_train, y_valid, y_test  = [], [], [], [], [], []
         count_train = count_test = count_zero = 0
 
         # ipdb.set_trace()
         print('Loading data ...')
-        self.dc2num = self.int2onehot(self.dc2int, 1) # deliver time
-        self.city2num = self.int2onehot(self.city2int, 1)
-        self.promo2num = self.int2onehot(self.promo2int, 1)
-        self.weather2num = [self.int2onehot(d, 1) for d in self.weather2int]
-        self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r'))
+        # 所有的 2num 都是对应one-hot编码的字典，所有 2int 都是直接用整数连续编码的字典
+        self.dc2num = self.int2onehot(self.dc2int, 1) # 配送周期
+        self.city2num = self.int2onehot(self.city2int, 1) # 城市
+        self.promo2num = self.int2onehot(self.promo2int, 1) # 促销
+        self.weather2num = [self.int2onehot(d, 1) for d in self.weather2int] # 天气
+        # 具体的数据结构见说明文档，或者直接看代码理解
+        self.wh_data = json.load(open('data/warehouse_sales_inventory_stock_return.json','r')) 
         self.wh_item_store_data = json.load(open('data/datasets.json', 'r'))['wh_item_stores']
-        self.item2num = self.int2onehot(self.item2int, 1)
-        self.store2num = self.int2onehot(self.store2int, 1)
+        self.item2num = self.int2onehot(self.item2int, 1) # 商品
+        self.store2num = self.int2onehot(self.store2int, 1) # 商店
         try:
             for wh_id in self.wh_data:
                 for item_id in self.wh_data[wh_id]:
@@ -212,20 +225,25 @@ class DateProcessing(object):
                     if values[0] > args.valid_days[1] or values[0] < args.valid_days[0]:
                         continue
                     try:
+                        # 加载对应仓库——商品的json文件
                         self.wh_item_data = json.load(open('data/items_data/%s_%s.json'%(wh_id, item_id),'r'))
                     except:
                         continue
-                    
+                    # 获取商品的保质期，订货时间，到货时间，在途时间
                     self.valid_days, self.orderdays, self.arrivedays, self.transp_time = values
                     for store_id in self.wh_item_data:
+                        # 获取商品，商店，城市的编码
                         item, store, city = self.item_store_city_coding(item_id, store_id, args.onehot)
                         for cur_date in self.wh_item_data[store_id]:
+                            # 获取状态表达，预测的时间周期，具体时间周期是根据当前时间，订货时间，到货时间来决定的，例子见说明文档
                             state, pred_time = self.generate_state_by_store(item, store, city, cur_date, item_id, store_id, args.onehot)
+                            # 计算预测的目标值
                             target = self.get_target_by_store(cur_date, pred_time, store_id)
                             if target < 0:
                                 count_zero += 1
                                 continue
                             if cur_date < args.test_start_date:
+                                # 属于训练数据或验证数据
                                 count_train += 1
                                 if count_train % args.valid_split == 0:
                                     x_valid.append(state)
@@ -233,7 +251,7 @@ class DateProcessing(object):
                                 else:
                                     x_train.append(state)
                                     y_train.append(target)
-                            else:
+                            else: # 属于测试数据
                                 count_test += 1
                                 x_test.append(state)
                                 y_test.append(target)
@@ -248,7 +266,9 @@ class DateProcessing(object):
 
 
     def generate_state_by_store(self, item, store, city, cur_date, item_id, store_id, onehot):
+        # 生成状态表达
         date_coding, weekday = self.date_transformation(cur_date, onehot)
+        # 计算预测的开始时间和结束时间
         od = sorted(zip(range(len(self.orderdays)), self.orderdays), key=lambda x:x[1]) # sort by weekday
         for i in xrange(len(od)):
             if weekday <= od[i][1]:
@@ -260,9 +280,8 @@ class DateProcessing(object):
                 break
         pred_time = [pred_start, pred_end]
         
-        
         # get store-specific features
-        deliver_time, weather = self.deliver_city_weather_coding(cur_date, store_id, onehot)
+        deliver_time, weather = self.deliver_weather_coding(cur_date, store_id, onehot)
         promotion = self.promotion_coding(cur_date, item_id, onehot)
         x_i_j = self.wh_item_data[store_id][cur_date]
         state = []
@@ -281,6 +300,7 @@ class DateProcessing(object):
 
 
     def get_target_by_store(self, cur_date, pred_time, store_id):
+        # 计算目标值
         tmp_date = self.update_date(cur_date, pred_time[0])
         target_sales = target_stocks = target_returns = 0
         valid_count = 0
@@ -297,6 +317,7 @@ class DateProcessing(object):
 
         if valid_count == 0:
             return -1
+        # 可以是销量，也可以是进货减去退货；如果是后者，需要适当的根据保质期来修改
         target_order = target_sales # target_stocks - target_returns # 
         return target_order
 
@@ -412,6 +433,7 @@ class DateProcessing(object):
 
 
     def update_date(self, cur_date, days=1):
+        # 更新日期，每次更新days天
         date = dtdt.strptime(cur_date, '%Y-%m-%d')
         new_date = date + dt.timedelta(days=days)
         return str(new_date).split()[0]
@@ -419,6 +441,8 @@ class DateProcessing(object):
 
     @timeit
     def compute_inventory(self):
+        # 以商店为单位，整合销量，进退货量，计算得到库存量，最后保存为[销量，库存量，进货量，退货量]，
+        # 具体数据结构见说明文档，这个函数暂时可以不用，因为数据已经处理过并保存了
         count = 0 # used for displaying the process
         sales_data = {} # {warehouse: {item: {store: {date: [sale, inventory, stock, return]}}}}
         in_out_data = {} # {warehouse: {item: {store: {date: [stock, return]}}}}
@@ -525,6 +549,8 @@ class DateProcessing(object):
 
     @timeit
     def compute_inventory_by_warehouse(self):
+        # 以仓库为单位，整合销量，进退货量，计算得到库存量，最后保存为[销量，库存量，进货量，退货量]，
+        # 具体数据结构见说明文档，这个函数暂时可以不用，因为数据已经处理过并保存了
         sales_data = {}
         in_out_data = {}
         for line in open('data/warehouses_stock_return.DAT').readlines():
@@ -589,6 +615,8 @@ class DateProcessing(object):
 
     @timeit
     def get_sales_volume_by_warehouse(self):
+        # 以仓库为单位，整合销量数据，最后保存为[日期，仓库，商品，销量]，
+        # 具体数据结构见说明文档，这个函数暂时可以不用，因为数据已经处理过并保存了
         data = {}
         dates = []
         count = count_error = 0
@@ -627,6 +655,8 @@ class DateProcessing(object):
 
     @timeit
     def get_stock_return_by_warehouse(self):
+        # 以仓库为单位，整合进退货量数据，最后保存为[日期，仓库，商品，进货量，退货量]，
+        # 具体数据结构见说明文档，这个函数暂时可以不用，因为数据已经处理过并保存了
         data = {}
         dates = []
         count = count_error = 0
@@ -666,6 +696,7 @@ class DateProcessing(object):
 
     @timeit
     def get_sales_volume_by_day(self):
+        # 把销量数据从时刻整合到天为单位，已经处理过，无需再用
         data = {}
         dates = []
         count = 0
@@ -699,6 +730,7 @@ class DateProcessing(object):
 
     @timeit
     def get_stock_and_return_by_day(self):
+        # 把进退货量数据从时刻整合到天为单位，已经处理过，无需再用
         data = {}
         dates = []
         count = 0
@@ -732,6 +764,7 @@ class DateProcessing(object):
 
 
     def get_stores(self):
+        # 从xlsx表格中获取商店相关的信息，self.stores: {store_id: (city, delivery_cycle) }
         for i in xrange(1, self.stores_wb.nrows):
             store_id = self.stores_wb.cell(i, 0).value.strip()
             city = self.stores_wb.cell(i, 1).value.strip()
@@ -746,6 +779,7 @@ class DateProcessing(object):
 
 
     def get_items(self):
+        # 获取商品相关信息，self.items: {item_id: [labels, ..., supplier_id] }
         for i in xrange(1, self.items_wb.nrows):
             item_id = self.items_wb.cell(i, 0).value
             supplier_id = self.items_wb.cell(i, self.items_wb.ncols - 1).value
@@ -757,6 +791,7 @@ class DateProcessing(object):
 
 
     def get_suppliers(self):
+        # 获取供应商信息，self.suppliers: {supplier_id: {warehouse_id: [data]}}
         for i in xrange(1, self.suppliers_wb.nrows):
             warehouse_id = str(int(float(self.suppliers_wb.cell(i, 0).value)))
             supplier_id = self.suppliers_wb.cell(i, 1).value
@@ -772,6 +807,7 @@ class DateProcessing(object):
 
 
     def get_weather(self):
+        # 获取天气信息，self.weather: {date: {city: [weather]} }
         for i in xrange(1, self.weather_wb.nrows):
             date = self.weather_wb.cell(i, 0).value
             city = self.weather_wb.cell(i, 1).value
@@ -795,6 +831,7 @@ class DateProcessing(object):
             
 
     def get_promotions(self):
+        # 获取促销信息，self.promotions: {item_id: [[date_start, date_end, promote_way, discount] ] }
         for i in xrange(1, self.promotions_wb.nrows):
             #date_start = dtdt.strptime(self.promotions_wb.cell(i, 1).value.split()[0], '%Y-%m-%d')
             #date_end = dtdt.strptime(self.promotions_wb.cell(i, 2).value.split()[0], '%Y-%m-%d')
@@ -816,6 +853,7 @@ class DateProcessing(object):
 
 
     def get_warehouses(self):
+        # 获取仓库信息，self.warehouses: {store_id: {class_id: warehouse_id} }
         for i in xrange(1, self.warehouses_wb.nrows):
             store_id = self.warehouses_wb.cell(i, 0).value
             if store_id == 'NULL': # skip NULL stores
@@ -832,6 +870,7 @@ class DateProcessing(object):
 
 
     def get_transport_time(self):
+        # 获取仓库——商品的运输时间等信息
         for item_id in self.items:
             supplier_id = self.items[item_id][-1]
             supplier_id = self.items[item_id][-1]

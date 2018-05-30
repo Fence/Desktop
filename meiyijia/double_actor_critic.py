@@ -18,7 +18,7 @@ from environment import Environment
 
 
 class ActorCritic(object):
-    """docstring for ActorCritic"""
+    """基本的 Actor-Critic模型，不包含advantage，也不含asynchronous"""
     def __init__(self, env, sess):
         self.env = env
         self.sess = sess
@@ -133,6 +133,7 @@ class ActorCritic(object):
     #                              Model Training                           #
     # ===================================================================== #
     def remember(self, cur_state, action, reward, new_state, terminal):
+        # replay memory
         self.memory['cur_state'].append(cur_state)
         self.memory['action'].append(action)
         self.memory['reward'].append(reward)
@@ -250,7 +251,7 @@ class ActorCritic(object):
 
 
 class A2CNets(object):
-    """docstring for A2CNets"""
+    """基本的 A2CNets，异步AC的每个线程"""
     def __init__(self, scope_name):
         self.emb_dim = args.emb_dim
         self.n_stores = args.n_stores
